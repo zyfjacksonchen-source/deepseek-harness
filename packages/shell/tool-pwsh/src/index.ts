@@ -349,7 +349,13 @@ export function apply(ctx: Context, config: Config = {}): void {
       validatePwshArgs(args)
       // Description is display metadata; workdir defaults to the caller's session.
       const standingPolicy = resolveSandboxPolicy(exec)
-      const approvedMode = args.sandbox_permissions !== undefined && args.justification !== undefined
+      const redundantEscalation = args.sandbox_permissions !== undefined
+        && standingPolicy !== undefined
+        && (args.sandbox_permissions === standingPolicy.mode
+          || standingPolicy.mode === 'danger-full-access')
+      const approvedMode = args.sandbox_permissions !== undefined
+        && args.justification !== undefined
+        && !redundantEscalation
         ? await approvePwshEscalation(args.sandbox_permissions, args.justification, exec, standingPolicy)
         : undefined
       const policy = approvedMode === undefined
