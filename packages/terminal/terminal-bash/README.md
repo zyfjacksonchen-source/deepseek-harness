@@ -12,6 +12,8 @@ Readiness combines a foreground-verified private bash prompt marker, provider-re
 
 Send cancellation marks queued input as canceled before asking the terminal handle to signal the current foreground process group with a real `SIGINT`; if asynchronous pre-write inspection later settles, it cannot execute that input. If a provider write is already in flight, signalling waits for it to settle; a rejected write sends no signal. The canceled send retains its slot until the write and foreground signalling settle, so a successor cannot receive either late bytes or that signal. A provider write or signal that never settles therefore retains the slot indefinitely; closing the session (`terminal_close`) is the recovery. The absolute deadline remains armed while cancellation waits. A signal failure is a terminal transport failure and rejects the active send. Cancellation never emulates interruption by writing `\x03`, so raw-mode programs remain cancellable. Close rejects new public signals, stops readiness polling, and awaits the handle's provider-owned complete-session termination before settling the active send as `session_exit`.
 
+The controlled printable `PS1` is exactly `__DSH_PERSISTENT_BASH_PROMPT__ `, including its trailing space, so process-backed persistent Bash and terminal readiness compare the same bytes.
+
 ## Model Experience
 
 ### Current file policy and indirect consumer
