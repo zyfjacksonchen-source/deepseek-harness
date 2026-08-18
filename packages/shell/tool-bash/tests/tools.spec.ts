@@ -610,8 +610,9 @@ describe('sandbox escalation through the generic task producer', () => {
     ctx.on('approval/request', () => { prompted(); return Promise.resolve<ApprovalOutcome>('allowed-once') })
     expect((await call(ctx, 'bash', escalate, sandboxAgent('workspace-write'))).isError).toBe(false)
     expect((await call(ctx, 'bash', escalate, sandboxAgent('danger-full-access'))).isError).toBe(false)
+    expect((await call(ctx, 'bash', { ...escalate, justification: '' }, sandboxAgent('danger-full-access'))).isError).toBe(false)
     expect(prompted).not.toHaveBeenCalled()
-    expect(bash.modes).toEqual(['workspace-write', 'danger-full-access'])
+    expect(bash.modes).toEqual(['workspace-write', 'danger-full-access', 'danger-full-access'])
 
     const malformed = sandboxAgent()
     ;(malformed.session.events as unknown as Array<{ type: string; data: { mode: string } }>).push({
