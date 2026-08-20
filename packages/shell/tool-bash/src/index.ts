@@ -62,9 +62,6 @@ function validateBashArgs(args: BashToolArgs): void {
   if (args.timeoutMs !== undefined && (!Number.isFinite(args.timeoutMs) || args.timeoutMs <= 0)) {
     throw new Error(`invalid timeoutMs: expected a positive number, got ${JSON.stringify(args.timeoutMs)}`)
   }
-  // The escalation pairing (sandbox_permissions ⇔ justification, non-empty) is
-  // the shared rule both enforcing families validate identically.
-  validateEscalationArgs(args.sandbox_permissions, args.justification)
 }
 
 function bashDescription(backgroundEnabled: boolean, escalationModes: readonly SandboxMode[]): string {
@@ -328,10 +325,19 @@ export function apply(ctx: Context, config: Config = {}): void {
       }],
     },
     async execute(args: BashToolArgs, exec) {
-      validateBashArgs(args)
-      // Description is display metadata; workdir defaults to the caller's session.
       const standingPolicy = resolveSandboxPolicy(exec)
-      const approvedMode = args.sandbox_permissions !== undefined && args.justification !== undefined
+      const redundantEscalation = args.sandbox_permissions !== undefined
+        && standingPolicy !== undefined
+        && (args.sandbox_permissions === standingPolicy.mode
+          || standingPolicy.mode === 'danger-full-access')
+      validateBashArgs(args)
+      if (!redundantEscalation) {
+        validateEscalationArgs(args.sandbox_permissions, args.justification)
+      }
+      // Description is display metadata; workdir defaults to the caller's session.
+      const approvedMode = args.sandbox_permissions !== undefined
+        && args.justification !== undefined
+        && !redundantEscalation
         ? await approveBashEscalation(args.sandbox_permissions, args.justification, exec, standingPolicy)
         : undefined
       const policy = approvedMode === undefined

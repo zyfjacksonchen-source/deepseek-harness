@@ -334,6 +334,17 @@ describe('image draft rail', () => {
     expect(view.getByRole('status').textContent).toContain('最多 20 张，每张 5MB')
   })
 
+  it('dismisses a stranded drop overlay by close control or Escape', () => {
+    const { view } = bench({ addImages: vi.fn(() => null) })
+    const dataTransfer = { types: ['Files'], files: [], dropEffect: 'none' }
+    fireEvent.dragEnter(document.body, { dataTransfer })
+    fireEvent.click(view.getByRole('button', { name: '关闭拖放提示' }))
+    expect(view.queryByRole('status')).toBeNull()
+    fireEvent.dragEnter(document.body, { dataTransfer })
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(view.queryByRole('status')).toBeNull()
+  })
+
   it('announces server attachment rejections as product copy, other codes as developer text', () => {
     const attachmentError = (reason: string): ConversationSnapshot['promptError'] => ({
       op: 'send',

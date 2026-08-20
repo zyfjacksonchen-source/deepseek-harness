@@ -94,10 +94,11 @@ export function dropOverlayLabels(
   accepting: boolean,
   limits?: { count: number; size: string },
 ): DropOverlayLabels {
-  if (!accepting) return { title: t('image.dropBlocked') }
+  if (!accepting) return { title: t('image.dropBlocked'), close: t('image.closeDrop') }
   return {
     title: t('image.dropTitle'),
     desc: limits === undefined ? undefined : t('image.dropDesc', { count: limits.count, size: limits.size }),
+    close: t('image.closeDrop'),
   }
 }
 

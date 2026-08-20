@@ -601,16 +601,18 @@ describe('sandbox escalation through the generic task producer', () => {
     }
   })
 
-  it('rejects injected escalation without a sandbox and non-widening escalation without prompting', async () => {
+  it('rejects injected escalation without a sandbox and runs redundant targets without prompting', async () => {
     const plain = await setup()
     expect(text(await call(plain, 'bash', escalate))).toContain('not available in this composition')
 
-    const { ctx } = await setupSandboxed(true)
+    const { ctx, bash } = await setupSandboxed(true)
     const prompted = vi.fn()
     ctx.on('approval/request', () => { prompted(); return Promise.resolve<ApprovalOutcome>('allowed-once') })
-    const result = await call(ctx, 'bash', { ...escalate, sandbox_permissions: 'workspace-write' }, sandboxAgent('workspace-write'))
-    expect(text(result)).toContain('not strictly wider')
+    expect((await call(ctx, 'bash', escalate, sandboxAgent('workspace-write'))).isError).toBe(false)
+    expect((await call(ctx, 'bash', escalate, sandboxAgent('danger-full-access'))).isError).toBe(false)
+    expect((await call(ctx, 'bash', { ...escalate, justification: '' }, sandboxAgent('danger-full-access'))).isError).toBe(false)
     expect(prompted).not.toHaveBeenCalled()
+    expect(bash.modes).toEqual(['workspace-write', 'danger-full-access', 'danger-full-access'])
 
     const malformed = sandboxAgent()
     ;(malformed.session.events as unknown as Array<{ type: string; data: { mode: string } }>).push({

@@ -14,7 +14,7 @@ Pure React attachment atoms (zero cordis): the composer draft-image rail (`Attac
 
 ## Drop overlay
 
-`DropOverlay` is the full-viewport invitation shown while a file drag is over the page: illustration, title, and a limits line while drops are accepted (`disabled` swaps the blocked illustration and hides the limits line). The layer is pointer-inert — the owner's document-level drag listeners keep the enter/leave count and decide accept/reject; the overlay only shows state. It portals to the body like the lightbox.
+`DropOverlay` is the full-viewport invitation shown while a file drag is over the page: illustration, title, and a limits line while drops are accepted (`disabled` swaps the blocked illustration and hides the limits line). The layer is pointer-inert except for its close control — the owner's document-level drag listeners keep the enter/leave count and decide accept/reject; the overlay only shows state. The close control and Escape call the owner's single dismiss path so a missed OS/browser `dragleave` or `dragend` cannot strand the page. It portals to the body like the lightbox.
 
 ## Model Experience
 

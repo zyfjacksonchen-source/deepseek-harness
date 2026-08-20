@@ -10,7 +10,7 @@ issue #2248 的第二步对齐，接在[附件展示 note](2026-08-11-web-attach
 
 ## 决策
 
-**整页拖放。** InputBar 在 document 上绑定 `dragenter`/`dragover`/`dragleave`/`drop`（enter/leave 深度计数、视口边缘与 `dragend` 复位、按 `Files` 类型门控使文本拖拽保留原生 textarea 路径），并渲染 `ui-attachment` 新增的 `DropOverlay` 原子组件：经 body portal、不接收指针事件的全视口层（DeepSeek Chat DragMask 的视觉——白色 70% 加 10px 模糊，dark 为 `rgba(39,39,48,0.7)`，插画、标题、上限行），`disabled` 变体宣告锁定或忙碌的 composer。指针惰性是承重的：拖拽事件继续命中下方页面，深度计数永远看不到遮罩自己。document 级监听状态是安全的，因为 composer-bar slot 为 `kind: 'single'`。
+**整页拖放。** InputBar 在 document 上绑定 `dragenter`/`dragover`/`dragleave`/`drop`（enter/leave 深度计数、视口边缘与 `dragend` 复位、按 `Files` 类型门控使文本拖拽保留原生 textarea 路径），并渲染 `ui-attachment` 新增的 `DropOverlay` 原子组件：经 body portal、不接收指针事件的全视口层（DeepSeek Chat DragMask 的视觉——白色 70% 加 10px 模糊，dark 为 `rgba(39,39,48,0.7)`，插画、标题、上限行），`disabled` 变体宣告锁定或忙碌的 composer。指针惰性是承重的：拖拽事件继续命中下方页面，深度计数永远看不到遮罩自己。唯一例外是显式关闭按钮；它和 Esc 都调用 InputBar 同一条深度复位路径，确保操作系统或浏览器漏发结束事件时遮罩不会滞留。document 级监听状态是安全的，因为 composer-bar slot 为 `kind: 'single'`。
 
 **灯箱。** 关闭钮换成 `ui-primitives` 的 `IconCloseOutline16`（Modal 的先例——在 viewBox 内居中的 SVG 不依赖字体度量）。backdrop 用共享的对话框遮罩（`--dsw-alias-bg-mask-1` 加 `--dsw-mask-blur`，两个主题都是黑基色），画在独立的兄弟图层上，因为 `backdrop-filter` 画在容器上会把预览图自己也模糊掉。
 
@@ -32,4 +32,4 @@ issue #2248 的第二步对齐，接在[附件展示 note](2026-08-11-web-attach
 
 ## 后果
 
-拖到窗口任何位置都能进附件栏，超限加入在手势发生的那一刻就以点名上限的文案失败，历史图片像 DeepSeek Chat 一样平铺。载体的默认请求体预算扩大约 5 倍，并且仍是单请求驻留内存上界（桥把请求体整体缓冲；已记录在 connection README 的限制节）。fixture 传输用硬编码的默认数字镜像该投影——改配置的部署会与 fixture 模式的文案分叉，对 keyless 演示通道可接受。画廊左右切换、灯箱缩放与下载、非图片文件卡片仍然推迟（#2248）。
+拖到窗口任何位置都能进附件栏；结束事件丢失而滞留的拖放遮罩可以通过指针或键盘关闭，不必重启应用。超限加入在手势发生的那一刻就以点名上限的文案失败，历史图片像 DeepSeek Chat 一样平铺。载体的默认请求体预算扩大约 5 倍，并且仍是单请求驻留内存上界（桥把请求体整体缓冲；已记录在 connection README 的限制节）。fixture 传输用硬编码的默认数字镜像该投影——改配置的部署会与 fixture 模式的文案分叉，对 keyless 演示通道可接受。画廊左右切换、灯箱缩放与下载、非图片文件卡片仍然推迟（#2248）。
