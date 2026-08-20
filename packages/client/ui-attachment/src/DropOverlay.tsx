@@ -1,4 +1,6 @@
+import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
+import { IconCloseOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 import css from './DropOverlay.module.css'
 
 /** Drop-overlay strings the owner resolves from its own locale namespace. */
@@ -7,6 +9,8 @@ export interface DropOverlayLabels {
   title: string
   /** Limits line under the title; shown only while drops are accepted. */
   desc?: string | undefined
+  /** Accessible label of the recovery control. */
+  close: string
 }
 
 /**
@@ -18,15 +22,29 @@ export interface DropOverlayLabels {
  *
  * @param props.disabled - drops are currently refused; renders the blocked
  * illustration and drops the desc line.
- * @param props.labels - resolved title and limits strings.
+ * @param props.labels - resolved title, limits, and close-control strings.
+ * @param props.onDismiss - clears the owner's drag state when the browser
+ * misses the matching leave/end event.
  * @returns the overlay layer.
  */
-export function DropOverlay({ disabled, labels }: {
+export function DropOverlay({ disabled, labels, onDismiss }: {
   disabled: boolean
   labels: DropOverlayLabels
+  onDismiss: () => void
 }) {
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.key === 'Escape') onDismiss()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => { window.removeEventListener('keydown', onKeyDown) }
+  }, [onDismiss])
+
   return createPortal(
     <div className={css.mask} role="status">
+      <button type="button" className={css.close} aria-label={labels.close} onClick={onDismiss}>
+        <IconCloseOutline16 size={16} />
+      </button>
       <div className={css.wrap}>
         <div className={css.illustration} aria-hidden="true">
           {disabled ? <UploadDisabledIllustration /> : <UploadIllustration />}

@@ -472,13 +472,13 @@ export function InputBar({
   // native drop-text-into-textarea path. The overlay layer itself is
   // pointer-inert, so it never disturbs the enter/leave count.
   const canAcceptDrop = !locked && !machineBusy && addImages !== undefined
+  const resetDrop = useCallback((): void => {
+    dragDepthRef.current = 0
+    setDragActive(false)
+  }, [])
   useEffect(() => {
     const hasFiles = (event: globalThis.DragEvent): boolean =>
       event.dataTransfer?.types.includes('Files') ?? false
-    const reset = (): void => {
-      dragDepthRef.current = 0
-      setDragActive(false)
-    }
     const onDragEnter = (event: globalThis.DragEvent): void => {
       if (!hasFiles(event)) return
       event.preventDefault()
@@ -498,12 +498,12 @@ export function InputBar({
       // engine; a page-root leave at the border means the drag left the window.
       const leavingViewport = event.clientX <= 0 || event.clientY <= 0
         || event.clientX >= window.innerWidth || event.clientY >= window.innerHeight
-      if ((event.target === document.documentElement || event.target === document.body) && leavingViewport) reset()
+      if ((event.target === document.documentElement || event.target === document.body) && leavingViewport) resetDrop()
     }
     const onDrop = (event: globalThis.DragEvent): void => {
       if (!hasFiles(event)) return
       event.preventDefault()
-      reset()
+      resetDrop()
       if (!canAcceptDrop) return
       intakeImages([...(event.dataTransfer?.files ?? [])])
     }
@@ -511,15 +511,15 @@ export function InputBar({
     document.addEventListener('dragover', onDragOver)
     document.addEventListener('dragleave', onDragLeave)
     document.addEventListener('drop', onDrop)
-    window.addEventListener('dragend', reset)
+    window.addEventListener('dragend', resetDrop)
     return () => {
       document.removeEventListener('dragenter', onDragEnter)
       document.removeEventListener('dragover', onDragOver)
       document.removeEventListener('dragleave', onDragLeave)
       document.removeEventListener('drop', onDrop)
-      window.removeEventListener('dragend', reset)
+      window.removeEventListener('dragend', resetDrop)
     }
-  }, [canAcceptDrop, intakeImages])
+  }, [canAcceptDrop, intakeImages, resetDrop])
 
   const closePreview = useCallback(() => { setPreview(null) }, [])
 
@@ -658,6 +658,7 @@ export function InputBar({
       {dragActive && (
         <DropOverlay
           disabled={!canAcceptDrop}
+          onDismiss={resetDrop}
           labels={dropOverlayLabels(t, canAcceptDrop, imageLimits === undefined ? undefined : {
             count: imageLimits.maxImagesPerMessage,
             size: imageSizeText(imageLimits.maxImageBytes),

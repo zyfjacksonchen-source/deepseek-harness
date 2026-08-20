@@ -15,6 +15,23 @@
   animation: fade-in 160ms ease-out;
 }
 
+.close {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--dsw-alias-border-l2-darkmode-thin);
+  border-radius: 999px;
+  pointer-events: auto;
+  background: var(--dsw-specific-input-major);
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+
 @keyframes fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
