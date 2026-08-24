@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-25-schedule-delivery-rollback-safety.md
-2026-08-25-schedule-delivery-rollback-safety.md: b84707dbe0a322bbb143bf978660bda0357c4bf1
-2026-08-25-schedule-delivery-rollback-safety.zh.md: 052de4425feadbf764b8b2f56089992a36ae7b6d
+2026-08-25-schedule-delivery-rollback-safety.md: 7dce1aa554bb892f95ba444fffad40f740fb756f
+2026-08-25-schedule-delivery-rollback-safety.zh.md: e1aea597ba191b0c75ca2cc353a46f42fa0a204a

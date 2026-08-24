@@ -149,6 +149,62 @@ describe('Schedule plugin composition', () => {
     await ctx.fiber.dispose()
   })
 
+  it('honors a closed admission provided by a launcher that is still loading', async () => {
+    const ctx = await harness()
+    const plugin = await ctx.plugin(toolSchedule)
+    const admission = new toolSchedule.ScheduleDeliveryAdmission(false)
+    let root!: Awaited<ReturnType<typeof ctx.agents.create>>
+    let strictReadWasHidden = false
+    let flushes = 0
+    const stopFlush = ctx.on('session/flush', () => { flushes += 1 })
+    const provider = await ctx.plugin({
+      name: 'schedule-closed-admission-provider-test',
+      inject: ['agents'],
+      async apply(providerCtx: Context) {
+        providerCtx.provide('scheduleDeliveryAdmission', admission)
+        strictReadWasHidden = providerCtx.get('scheduleDeliveryAdmission') === undefined
+        root = await providerCtx.agents.create({ sessionId: SessionId('schedule-loading-admission') })
+        root.agent.session.append('schedule/change', {
+          version: 1,
+          operation: 'create',
+          schedule: toolSchedule.createAfterScheduleRecord(
+            toolSchedule.ScheduleId('schedule-1'),
+            'must remain closed during launcher startup',
+            1,
+            Date.now() - 2_000,
+          ),
+        })
+        agentEvents(providerCtx, root.agent).emit('agent/status', { status: 'idle' })
+      },
+    })
+    await settle()
+
+    expect(strictReadWasHidden).toBe(true)
+    expect(admission.isOpen).toBe(false)
+    expect(flushes).toBe(0)
+    expect(root.agent.session.events.filter(event => event.type === 'schedule/delivery')).toEqual([])
+    expect(root.agent.session.events.filter(event =>
+      event.type === 'schedule/change' && event.data.operation === 'dispatch')).toEqual([])
+    expect(root.agent.session.events.filter(event => event.type === 'user/message')).toEqual([])
+    expect(root.agent.inbox.nextStep).toEqual([])
+    expect(root.agent.inbox.nextTurn).toEqual([])
+
+    admission.open()
+    await settle()
+    await root.agent.whenIdle()
+    await settle()
+    expect(root.agent.session.events.filter(event =>
+      event.type === 'schedule/delivery' && event.data.operation === 'delivery-pending')).toHaveLength(1)
+    expect(root.agent.session.events.filter(event =>
+      event.type === 'schedule/delivery' && event.data.operation === 'delivery-complete')).toHaveLength(1)
+
+    stopFlush()
+    await root.dispose()
+    await provider.dispose()
+    await plugin.dispose()
+    await ctx.fiber.dispose()
+  })
+
   it('admits delivery by default when no launcher controller is provided', async () => {
     const ctx = await harness()
     const plugin = await ctx.plugin(toolSchedule)
