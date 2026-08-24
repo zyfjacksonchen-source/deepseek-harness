@@ -6,8 +6,16 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-session-persistence'
+import { ScheduleDeliveryAdmission } from './admission.ts'
 import { ScheduleRuntime } from './runtime.ts'
 import { registerScheduleTools } from './tools.ts'
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** Launcher-owned one-way gate for Schedule delivery work. */
+    scheduleDeliveryAdmission?: ScheduleDeliveryAdmission
+  }
+}
 
 export type * from './types.ts'
 export {
@@ -35,6 +43,7 @@ export {
   scheduleView,
 } from './domain.ts'
 export { registerScheduleTools } from './tools.ts'
+export { ScheduleDeliveryAdmission } from './admission.ts'
 
 /** Cordis function-plugin name. */
 export const name = 'schedule'
@@ -51,7 +60,8 @@ export function apply(ctx: Context): void {
   ctx.effect(() => {
     const stopCreated = ctx.on('agent/created', ({ agent }) => {
       if (stopping || runtimes.has(agent) || !ctx.agents.roots().includes(agent)) return
-      const runtime = new ScheduleRuntime(ctx, agent)
+      const admission = ctx.get('scheduleDeliveryAdmission') ?? new ScheduleDeliveryAdmission(true)
+      const runtime = new ScheduleRuntime(ctx, agent, admission)
       const cleanup: OwnerCleanup = agent.ctx.effect(() => {
         const disposeTools = registerScheduleTools(ctx, agent.ctx, agent, () => { runtime.requestDrive() })
         const stopStatus = agent.ctx.on('agent/status', ({ status }) => {

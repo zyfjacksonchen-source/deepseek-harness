@@ -14,6 +14,7 @@ import {
   renderScheduleDeliveryFraming,
   resolveScheduleDueDecision,
 } from '../src/domain.ts'
+import { ScheduleDeliveryAdmission } from '../src/admission.ts'
 import { MAX_TIMER_DELAY_MS, ScheduleRuntime } from '../src/runtime.ts'
 
 const contexts: Context[] = []
@@ -158,8 +159,11 @@ async function settle(): Promise<void> {
   for (let index = 0; index < 8; index += 1) await Promise.resolve()
 }
 
-function runtimeFor(test: RuntimeHarness): ScheduleRuntime {
-  const runtime = new ScheduleRuntime(test.ctx, test.agent)
+function runtimeFor(
+  test: RuntimeHarness,
+  admission = new ScheduleDeliveryAdmission(true),
+): ScheduleRuntime {
+  const runtime = new ScheduleRuntime(test.ctx, test.agent, admission)
   test.controls.wakeRuntime = () => { runtime.requestDrive() }
   runtimes.push(runtime)
   return runtime
@@ -177,6 +181,116 @@ afterEach(async () => {
 })
 
 describe('Schedule timer and admission runtime', () => {
+  it('coalesces every closed trigger and wakes every existing runtime once on open', async () => {
+    const admission = new ScheduleDeliveryAdmission(false)
+    const first = await harness()
+    const second = await harness()
+    appendAfter(first, 'schedule-1', 1, Date.now() - 2_000)
+    appendAfter(second, 'schedule-1', 1, Date.now() - 2_000)
+    first.controls.canReserve = false
+    const firstRuntime = runtimeFor(first, admission)
+    const secondRuntime = runtimeFor(second, admission)
+    const firstLength = first.agent.session.events.length
+    const secondLength = second.agent.session.events.length
+
+    firstRuntime.start()
+    secondRuntime.start()
+    firstRuntime.requestDrive()
+    firstRuntime.requestDrive()
+    secondRuntime.requestDrive()
+    await settle()
+
+    expect(first.controls.flushCount).toBe(0)
+    expect(second.controls.flushCount).toBe(0)
+    expect(first.order).not.toContain('maintenance')
+    expect(second.order).not.toContain('maintenance')
+    expect(first.controls.whenIdleCount).toBe(0)
+    expect(first.agent.session.events).toHaveLength(firstLength)
+    expect(second.agent.session.events).toHaveLength(secondLength)
+    expect(first.agent.inbox.nextStep).toEqual([])
+    expect(first.agent.inbox.nextTurn).toEqual([])
+    expect(second.agent.inbox.nextStep).toEqual([])
+    expect(second.agent.inbox.nextTurn).toEqual([])
+    expect(vi.getTimerCount()).toBe(0)
+
+    first.controls.canReserve = true
+    admission.open()
+    admission.open()
+    await settle()
+
+    for (const test of [first, second]) {
+      expect(test.followed).toHaveLength(1)
+      expect(test.agent.session.events.filter(event =>
+        event.type === 'schedule/delivery' && event.data.operation === 'delivery-pending')).toHaveLength(1)
+      expect(test.agent.session.events.filter(event =>
+        event.type === 'schedule/delivery' && event.data.operation === 'delivery-complete')).toHaveLength(1)
+      expect(test.agent.session.events.filter(event => event.type === 'user/message')).toHaveLength(1)
+    }
+  })
+
+  it('does not arm a future timer before admission opens', async () => {
+    const test = await harness()
+    appendAfter(test, 'schedule-1', 60)
+    const admission = new ScheduleDeliveryAdmission(false)
+    const runtime = runtimeFor(test, admission)
+
+    runtime.start()
+    await settle()
+    expect(test.controls.flushCount).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+
+    admission.open()
+    await settle()
+    expect(test.controls.flushCount).toBe(1)
+    expect(vi.getTimerCount()).toBe(1)
+  })
+
+  it('does not repair or queue an existing pending delivery while closed', async () => {
+    const test = await harness()
+    appendAfter(test, 'schedule-1', 1, Date.now() - 2_000)
+    const record = foldScheduleEvents(test.agent.session.events).active[0]
+    if (record === undefined) throw new Error('expected due Schedule record')
+    const decision = resolveScheduleDueDecision([record], Date.now())
+    if (decision.kind === 'wait') throw new Error('expected due Schedule decision')
+    const pending = createScheduleDeliveryPendingChange(decision, test.agent.session.seq)
+    test.agent.session.append('schedule/delivery', pending, { ignorable: true })
+    const before = [...test.agent.session.events]
+    const admission = new ScheduleDeliveryAdmission(false)
+    const runtime = runtimeFor(test, admission)
+
+    runtime.start()
+    runtime.requestDrive()
+    await settle()
+
+    expect(test.controls.flushCount).toBe(0)
+    expect(test.agent.session.events).toEqual(before)
+    expect(test.agent.inbox.nextStep).toEqual([])
+    expect(test.agent.inbox.nextTurn).toEqual([])
+
+    admission.open()
+    await settle()
+    expect(test.followed).toHaveLength(1)
+    expect(foldScheduleEvents(test.agent.session.events).pendingDelivery).toBeUndefined()
+  })
+
+  it('does not let a stale closed controller wake a disposed runtime', async () => {
+    const test = await harness()
+    appendAfter(test, 'schedule-1', 1, Date.now() - 2_000)
+    const admission = new ScheduleDeliveryAdmission(false)
+    const runtime = runtimeFor(test, admission)
+    const before = [...test.agent.session.events]
+
+    runtime.start()
+    await runtime.dispose()
+    admission.open()
+    await settle()
+
+    expect(test.controls.flushCount).toBe(0)
+    expect(test.agent.session.events).toEqual(before)
+    expect(test.agent.inbox.nextStep).toEqual([])
+    expect(test.agent.inbox.nextTurn).toEqual([])
+  })
+
   it('segments waits beyond the Node timer limit and rechecks the wall clock', async () => {
     const test = await harness()
     const delaySeconds = Math.ceil((MAX_TIMER_DELAY_MS + 1_500) / 1_000)

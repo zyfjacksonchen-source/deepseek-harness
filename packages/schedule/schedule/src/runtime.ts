@@ -20,6 +20,7 @@ import type {
   PendingScheduleDelivery,
   ScheduleDueDecision,
 } from './domain.ts'
+import type { ScheduleDeliveryAdmission } from './admission.ts'
 import { flushSchedulePersistence } from './persistence.ts'
 import { runScheduleTransaction } from './transaction.ts'
 
@@ -36,6 +37,7 @@ export class ScheduleRuntime {
   private readonly stop = Promise.withResolvers<void>()
   private timer: ReturnType<typeof setTimeout> | undefined
   private idleWait: Promise<void> | undefined
+  private admissionWait: Promise<void> | undefined
   private run: Promise<void> | undefined
   private requested = false
   private stopping = false
@@ -46,10 +48,12 @@ export class ScheduleRuntime {
    * Construct an inactive runtime; {@link start} begins the first preflight.
    * @param ctx - Global service context.
    * @param agent - Exact live root agent.
+   * @param admission - Process-local delivery admission selected before runtime creation.
    */
   constructor(
     private readonly ctx: Context,
     private readonly agent: Agent,
+    private readonly admission: ScheduleDeliveryAdmission,
   ) {}
 
   /** Begin the initial durability preflight and timer derivation. */
@@ -62,6 +66,10 @@ export class ScheduleRuntime {
     if (this.stopping || this.faulted) return
     this.clearTimer()
     this.requested = true
+    if (!this.admission.isOpen) {
+      this.waitForAdmission()
+      return
+    }
     if (this.run !== undefined) return
     let run: Promise<void>
     try {
@@ -92,9 +100,21 @@ export class ScheduleRuntime {
       this.requested = false
       this.clearTimer()
       this.stop.resolve()
-      const pending = [this.run, this.idleWait].filter((value): value is Promise<void> => value !== undefined)
+      const pending = [this.run, this.idleWait, this.admissionWait]
+        .filter((value): value is Promise<void> => value !== undefined)
       await Promise.allSettled(pending)
     })())
+  }
+
+  /** Retain one coalesced trigger until the launcher's one-way gate opens. */
+  private waitForAdmission(): void {
+    if (this.admissionWait !== undefined) return
+    const wait = Promise.race([this.admission.whenOpen(), this.stop.promise])
+    this.admissionWait = wait
+    void wait.then(() => {
+      this.admissionWait = undefined
+      if (this.admission.isOpen) this.requestDrive()
+    })
   }
 
   /** Drain coalesced triggers serially. */
@@ -122,7 +142,7 @@ export class ScheduleRuntime {
 
   /** Whether this runtime may start or continue Schedule work. */
   private isRunnable(): boolean {
-    return !this.stopping && this.isLive()
+    return this.admission.isOpen && !this.stopping && this.isLive()
   }
 
   /** Cancel the currently armed timer, if any. */
@@ -134,6 +154,7 @@ export class ScheduleRuntime {
 
   /** Arm one bounded timer segment; every wake rechecks the wall clock. */
   private arm(target: number, now: number): void {
+    if (!this.isRunnable()) return
     const delay = Math.min(target - now, MAX_TIMER_DELAY_MS)
     this.timer = setTimeout(() => {
       this.timer = undefined
@@ -187,6 +208,7 @@ export class ScheduleRuntime {
 
   /** Requeue the exact pending message, replacing a cold pending copy to wake its Agent. */
   private queuePending(delivery: PendingScheduleDelivery): boolean {
+    if (!this.isRunnable()) return false
     const deterministic = freezeMessage({
       id: delivery.messageId,
       role: 'user' as const,
@@ -231,20 +253,24 @@ export class ScheduleRuntime {
   }
 
   /** Remove any second compatible copy after one current or old-pin message is durable. */
-  private discardPendingCopies(delivery: PendingScheduleDelivery): void {
+  private discardPendingCopies(delivery: PendingScheduleDelivery): boolean {
+    if (!this.isRunnable()) return false
     for (const message of [...this.agent.inbox.nextStep, ...this.agent.inbox.nextTurn]) {
       if (isPendingScheduleDeliveryMessage(message, delivery)
         && !this.agent.inbox.remove(message.id)) {
         throw new Error('pending message disappeared before Schedule could discard its duplicate')
       }
     }
+    return true
   }
 
   /** Append the still-missing v1 state mirrors before any reminder can enter Inbox. */
-  private appendManagementDispatches(delivery: PendingScheduleDelivery): void {
+  private appendManagementDispatches(delivery: PendingScheduleDelivery): boolean {
+    if (!this.isRunnable()) return false
     for (const change of delivery.managementDispatches) {
       this.agent.session.append('schedule/change', change)
     }
+    return true
   }
 
   /** Preflight, fold, arm, or dispatch the next one-shot or fixed-rate batch. */
@@ -282,7 +308,7 @@ export class ScheduleRuntime {
         if (claimed.pendingDelivery !== undefined) {
           let delivery = claimed.pendingDelivery
           if (delivery.managementDispatches.length !== 0) {
-            this.appendManagementDispatches(delivery)
+            if (!this.appendManagementDispatches(delivery)) return 'none'
             try {
               await flushSchedulePersistence(this.ctx, this.agent.session)
             } catch (error: unknown) {
@@ -300,7 +326,7 @@ export class ScheduleRuntime {
             delivery = reconciled
           }
           if (delivery.admitted) {
-            this.discardPendingCopies(delivery)
+            if (!this.discardPendingCopies(delivery) || !this.isRunnable()) return 'none'
             this.agent.session.append('schedule/delivery', {
               version: 2,
               operation: 'delivery-complete',
@@ -320,12 +346,13 @@ export class ScheduleRuntime {
         }
         const pendingChange = createScheduleDeliveryPendingChange(decision, this.agent.session.seq)
         try {
+          if (!this.isRunnable()) return 'none'
           this.agent.session.append('schedule/delivery', pendingChange, { ignorable: true })
           const reserved = this.readFolded()?.pendingDelivery
           if (reserved === undefined || reserved.deliveryId !== pendingChange.deliveryId) {
             throw new Error('delivery-pending did not become the current Schedule outbox row')
           }
-          this.appendManagementDispatches(reserved)
+          if (!this.appendManagementDispatches(reserved)) return 'none'
         } catch (error: unknown) {
           this.faulted = true
           this.clearTimer()
