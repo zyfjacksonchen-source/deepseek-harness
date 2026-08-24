@@ -23,7 +23,10 @@ export {
   createAtScheduleRecord,
   createEveryScheduleRecord,
   decodeScheduleChange,
+  decodeScheduleDeliveryChange,
   foldScheduleEvents,
+  isLegacyScheduleDeliveryMessage,
+  isPendingScheduleDeliveryMessage,
   renderReminderFraming,
   renderEveryReminderBatchFraming,
   resolveEveryOccurrence,
@@ -52,7 +55,8 @@ export function apply(ctx: Context): void {
       const cleanup: OwnerCleanup = agent.ctx.effect(() => {
         const disposeTools = registerScheduleTools(ctx, agent.ctx, agent, () => { runtime.requestDrive() })
         const stopStatus = agent.ctx.on('agent/status', ({ status }) => {
-          if (status === 'idle' && agent.session.events.some(event => event.type === 'schedule/change')) {
+          if (status === 'idle' && agent.session.events.some(event =>
+            event.type === 'schedule/change' || event.type === 'schedule/delivery')) {
             runtime.requestDrive()
           }
         })

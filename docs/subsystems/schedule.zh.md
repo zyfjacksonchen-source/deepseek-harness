@@ -2,7 +2,7 @@
 
 [English](schedule.md) | 中文
 
-Schedule 拥有持久提醒；这些提醒会作为普通的后续对话轮次返回原 live Session。[持久 Schedule Agent Note](../../.agents/notes/implemented/feature/2026-08-05-durable-web-schedule.md) 负责持久化与生命周期决策，[对话式交付](../../.agents/notes/implemented/simplification/2026-08-09-conversational-schedule-delivery.md) 负责无回执边界，[显式时区边界](../../.agents/notes/implemented/simplification/2026-08-09-explicit-schedule-time-zone.md) 负责浏览器本地解释，[有界固定速率 Schedule](../../.agents/notes/implemented/simplification/2026-08-09-bounded-fixed-rate-schedule.md) 负责重复调度。本页记录 [`packages/schedule/schedule/src/types.ts`](../../packages/schedule/schedule/src/types.ts) 中的持久数据形状和面向模型的数据形状；[包 README](../../packages/schedule/schedule/README.md) 负责组合、工具行为与确切的提醒 framing。
+Schedule 拥有持久提醒；这些提醒会作为普通的后续对话轮次返回原 live Session。[持久 Schedule Agent Note](../../.agents/notes/implemented/feature/2026-08-05-durable-web-schedule.md) 负责持久化与生命周期决策，[回滚安全交付](../../.agents/notes/implemented/bug-fix/2026-08-25-schedule-delivery-rollback-safety.md) 负责 outbox 与队列权限边界，[对话式交付](../../.agents/notes/implemented/simplification/2026-08-09-conversational-schedule-delivery.md) 负责无回执边界，[显式时区边界](../../.agents/notes/implemented/simplification/2026-08-09-explicit-schedule-time-zone.md) 负责浏览器本地解释，[有界固定速率 Schedule](../../.agents/notes/implemented/simplification/2026-08-09-bounded-fixed-rate-schedule.md) 负责重复调度。本页记录 [`packages/schedule/schedule/src/types.ts`](../../packages/schedule/schedule/src/types.ts) 中的持久数据形状和面向模型的数据形状；[包 README](../../packages/schedule/schedule/README.md) 负责组合、工具行为与确切的提醒 framing。
 
 ## 持久记录
 
@@ -99,7 +99,7 @@ Schedule 会拒绝无效偏移量与时区、不带偏移量的字符串、非�
 
 ## 持久变更与回放
 
-版本 1 的 `schedule/change` 会话事件是 Schedule 唯一的持久权威。create 保存完整记录，delete 是终结性且仅含 id 的转换。一次性提醒的 dispatch 同样是终结性且仅含 id。Every dispatch 携带用于选择最新到期触发的墙钟判断时刻，通常推进活动记录而不终结它。dispatch 表示 follow-up 已同步入队，而不表示模型答复成功或用户已读取答复。
+版本 1 的 `schedule/change` Session 事件是唯一的 Schedule 业务状态权威。create 保存完整记录，delete 是终结性且仅含 id 的转换。一次性提醒的 dispatch 同样是终结性且仅含 id。Every dispatch 携带用于选择最新到期触发的墙钟判断时刻，通常推进活动记录而不终结它。dispatch 会把选中的 occurrence 提交到版本 1 状态；它不表示队列准入、模型答复或用户确认已经成功。
 
 ```ts type-equiv
 /** Creates one durable reminder record. */
@@ -145,11 +145,61 @@ type ScheduleDispatchChange = OneShotScheduleDispatchChange | EveryScheduleDispa
 ```
 
 ```ts type-equiv
-/** Strict version-1 durable Schedule mutation union. */
-type ScheduleChange = ScheduleCreateChange | ScheduleDeleteChange | ScheduleDispatchChange
+/** Strict durable version-1 Schedule management mutation union. */
+type ScheduleChange =
+  | ScheduleCreateChange
+  | ScheduleDeleteChange
+  | ScheduleDispatchChange
 ```
 
-严格 decoder 与 fold 会拒绝未知版本、额外字段、复用 id、不匹配的一次性提醒或 Every dispatch 形状，以及针对非活动记录的 delete 或 dispatch 转换。普通 Session 折叠完整事件流。fork 只折叠 `SessionHeader.seedLength` 位置及其后的事件，因此保留历史，但不会接管父 Session 的活动提醒。`schedule/change` 声明和源码位置也编入[持久化目录](../persistence-catalog.md#schedulechange--log-only)。
+严格 decoder 与 fold 会拒绝未知版本、额外字段、复用 id、不匹配的一次性提醒或 Every dispatch 形状，以及针对非活动记录的 delete 或 dispatch 转换。普通 Session 折叠完整事件流。fork 只折叠 `SessionHeader.seedLength` 位置及其后的事件，因此保留历史，但不会接管父 Session 的活动提醒。持久化目录同时收录 [`schedule/change`](../persistence-catalog.md#schedulechange--log-only) 与 [`schedule/delivery`](../persistence-catalog.md#scheduledelivery--log-only)。
+
+版本 2 的 `schedule/delivery` 是同一 Session stream 中的辅助 outbox 行，绝不是第二套 scheduler、队列、store 或活动状态 owner。pending 会校验并围栏一个确切到期决策，但不会改变活动记录；只有对应的版本 1 dispatch 变更才会改变活动状态。只有确切的 Session `user/message` 持久化后，complete 才会关闭该行。writer 会为每个 delivery envelope 标记 `ignorable: true`，使受支持的旧 reader 可以保留并跳过辅助行，同时从版本 1 派生完整活动状态。
+
+pending event seq 与完整有序的 occurrence 身份会派生一个 delivery id 和一个确定性 message id；prompt 永远不会进入这两类身份。回滚前缀出现后，这些 id 仍命名原始 batch。replay 会把每条具备确切 dispatch-prefix framing 的旧版随机 id message 映射到对应 occurrence id，合并这些身份，并让确定性 message 保持原始 id、只渲染仍未被表示的 occurrence。只有该并集覆盖每个 pending occurrence 时，complete 才合法。强制 old-pin crash recovery 造成的确切重叠只会记账一次，使当前恢复不再追加副本，但这些历史重复不会被改写或隐藏。pending 之后的 v1 delete 会终止未来活动状态，但不会撤回已经保留的 occurrence。
+
+```ts type-equiv
+/** One occurrence reserved in a version-2 delivery batch. */
+interface ScheduleDeliveryOccurrence {
+  /** Deterministic identity derived from the pending event seq, schedule id, and occurrence instant. */
+  readonly occurrenceId: ScheduleOccurrenceId
+  /** Active schedule that produced the occurrence. */
+  readonly scheduleId: ScheduleId
+  /** Canonical UTC occurrence instant. */
+  readonly occurrenceAt: string
+}
+```
+
+```ts type-equiv
+/** Durably reserves occurrences before their deterministic Inbox message is queued. */
+interface ScheduleDeliveryPendingChange {
+  readonly version: 2
+  readonly operation: 'delivery-pending'
+  /** Deterministic identity of this ordered occurrence batch. */
+  readonly deliveryId: ScheduleDeliveryId
+  /** Deterministic Session-local user-message identity for the batch. */
+  readonly messageId: MessageId
+  /** Wall-clock decision time that selected the occurrences. */
+  readonly acceptedAt: string
+  /** One one-shot occurrence or the complete due fixed-rate batch. */
+  readonly occurrences: readonly ScheduleDeliveryOccurrence[]
+}
+```
+
+```ts type-equiv
+/** Closes one pending delivery after exact durable carriers cover every occurrence. */
+interface ScheduleDeliveryCompleteChange {
+  readonly version: 2
+  readonly operation: 'delivery-complete'
+  readonly deliveryId: ScheduleDeliveryId
+  readonly messageId: MessageId
+}
+```
+
+```ts type-equiv
+/** Strict version-2 delivery mutation union. */
+type ScheduleDeliveryChange = ScheduleDeliveryPendingChange | ScheduleDeliveryCompleteChange
+```
 
 ## 活动视图与管理
 
@@ -181,6 +231,8 @@ type ScheduleView = ScheduleRecord & {
 
 进程内 owner 根据持久 fold 派生最早的 timer，并在每次有界等待后重新读取墙钟。cold Session 不执行任何工作；重新打开后会重建 timer，并使已经过去的目标进入 overdue 状态。到期的一次性提醒享有优先级，每次只进入一个后续轮次。当没有一次性提醒到期时，所有 overdue 的 Every 记录会组成上述单个批次。
 
-到期工作会先等待 Agent 完全 idle 并认领 maintenance phase，再重新折叠状态、采样本次判断、将一个 `followup()` 排入队列，并追加对应的 dispatch 变更。它绝不会调用 `steer()`，也绝不会中断当前轮次。
+到期工作会先等待 Agent 完全 idle 并认领 maintenance phase，再重新折叠状态并采样一次决策。它会先追加一条可忽略的 delivery-pending 行和完整有序的版本 1 dispatch 批次，跨过一个持久化 barrier 后，才把确定性的 `followup()` 排入队列。pending 行会为当前 reader 建立围栏，但不会改变活动状态；发生 torn prefix 时，恢复会在任何 message 进入 Inbox 前补齐所有缺失的 v1 dispatch。它绝不会调用 `steer()`，也绝不会中断当前轮次。
 
-获得准入的一次性提醒或固定速率批次会启动一个普通的后续轮次，且只通过普通对话 transcript（文本记录）出现；Schedule 不提供独立的持久 Web 回执或浏览器渲染器。如果 framing 构造或同步队列准入失败，则不会记录 dispatch，提醒仍保持活动。队列准入后、持久 dispatch 前的狭窄崩溃窗口可能使提醒内容在恢复后重复，因此该边界提供的是尽力而为的至少一次交付，而非恰好一次交付。
+获得准入的一次性提醒或固定速率批次会启动一个普通的后续轮次，且只通过普通对话 transcript（文本记录）出现；Schedule 不提供独立的持久 Web 回执或浏览器渲染器。确切的 Session `user/message` 会让 outbox 行获得准入。恢复会移除任何其他兼容的 Inbox 副本、追加 delivery-complete，并跨过第二个 barrier；如果移除副本失败，则会以故障关闭且不完成交付。当前队列 snapshot 会公开 producer ownership，Host 的公共 update 边界会拒绝 Schedule 行的 edit、steer 与 cancel，而不是只在某个 UI 中隐藏操作。
+
+回滚准入只使用原生 Session projection。当前 Host 会先 quiesce Agent 并 flush 每个 live Session；随后 updater 枚举 `ctx.sessionPersistence.list()`，对每个 header 调用 `inspect(header.id)`，并要求所有 Session 都满足 `foldScheduleEvents(inspection.events, inspection.meta.seedLength ?? 0).pendingDelivery === undefined`。任何 flush、list、inspect 或 fold 失败都会阻断旧 pin 的选择；该读取路径不会增加 sidecar 或第二 store。通过准入后，旧 reader 会保留并跳过可忽略的 delivery 行，同时从 v1 读取完整活动状态。当前恢复只会映射 pending 之后、具备确切 plugin source 与重建 dispatch-prefix framing 的旧 message，其中包括 user-message 先于 dispatch 的顺序。它会合并每个确切 carrier，只排入 residual occurrence，并在 source 或 framing 未知时进入故障状态。确切重叠会防止当前版本再次发送，但无法掩盖连续强制 old-pin crash recovery 已经产生的重复。因此 forced old→old 门禁是“存在 pending 时必须阻断回滚”的负面证据，而不是通过的兼容案例。旧 Host 也早于 producer-owned 队列保护，因此降级期间仍禁止队列管理。通过准入的协议会对 Session 输入去重，但不承诺模型完成、用户确认或外部副作用恰好一次。

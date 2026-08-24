@@ -18,6 +18,7 @@ import type {
   ScheduleDeliveryId,
   ScheduleDeliveryOccurrence,
   ScheduleDeliveryPendingChange,
+  ScheduleDispatchChange,
   ScheduleId as ScheduleIdType,
   ScheduleOccurrenceId,
   ScheduleRecord,
@@ -106,11 +107,11 @@ export interface FoldedSchedules {
   readonly active: readonly ScheduleRecord[]
   /** Every id ever created in this session-local suffix. */
   readonly seenIds: readonly ScheduleIdType[]
-  /** Sole admitted batch not yet closed by its delivery-complete event. */
+  /** Sole reserved batch; after a persistence flush, absence is this Session's old-pin admission signal. */
   readonly pendingDelivery?: PendingScheduleDelivery
 }
 
-/** One fixed-rate record and its latest occurrence in an admitted batch. */
+/** One fixed-rate record and its latest occurrence in a selected due batch. */
 export interface EveryDue {
   readonly record: EveryScheduleRecord
   readonly occurrenceAt: string
@@ -127,7 +128,7 @@ export interface PendingScheduleOccurrence extends ScheduleDeliveryOccurrence {
   readonly record: ScheduleRecord
 }
 
-/** Replayable material retained for the only delivery until completion. */
+/** Replayable material retained for the only open delivery until completion. */
 export interface PendingScheduleDelivery {
   /** Session event seq that namespaces every deterministic identity in this batch. */
   readonly deliverySeq: number
@@ -135,8 +136,22 @@ export interface PendingScheduleDelivery {
   readonly messageId: MessageId
   readonly acceptedAt: string
   readonly occurrences: readonly PendingScheduleOccurrence[]
-  /** Whether the exact deterministic Session user message is already durable. */
+  /** Version-1 dispatches still required before this admitted outbox row may close. */
+  readonly managementDispatches: readonly ScheduleDispatchChange[]
+  /** Occurrences already represented by exact durable Schedule user messages. */
+  readonly admittedOccurrenceIds: readonly ScheduleOccurrenceId[]
+  /** Exact old-pin framings and occurrence subsets reconstructed at compatible v1 dispatch prefixes. */
+  readonly legacyMessages: readonly LegacyScheduleDeliveryMessage[]
+  /** Whether every reserved occurrence is represented by durable Session input. */
   readonly admitted: boolean
+  /** Exact deterministic text after that current-version message was admitted. */
+  readonly admittedDeterministicText?: string
+}
+
+/** One exact old-pin Schedule message reconstructed from a v1 dispatch prefix. */
+interface LegacyScheduleDeliveryMessage {
+  readonly text: string
+  readonly occurrenceIds: readonly ScheduleOccurrenceId[]
 }
 
 /** One latest-only fixed-rate decision derived without enumerating a backlog. */
@@ -618,7 +633,7 @@ function decodeDeliveryOccurrence(value: unknown): ScheduleDeliveryOccurrence {
 }
 
 /** Decode one strict version-2 delivery mutation. */
-function decodeDeliveryChange(value: Record<string, unknown>): ScheduleDeliveryPendingChange | ScheduleDeliveryCompleteChange {
+function decodeDeliveryRecord(value: Record<string, unknown>): ScheduleDeliveryPendingChange | ScheduleDeliveryCompleteChange {
   switch (value['operation']) {
     case 'delivery-pending': {
       if (!hasExactKeys(value, [
@@ -662,7 +677,7 @@ function decodeDeliveryChange(value: Record<string, unknown>): ScheduleDeliveryP
       })
     default:
       throw new ScheduleLogError(
-        'version-2 schedule/change operation must be delivery-pending or delivery-complete',
+        'version-2 schedule/delivery operation must be delivery-pending or delivery-complete',
       )
   }
 }
@@ -675,8 +690,20 @@ function decodeDeliveryChange(value: Record<string, unknown>): ScheduleDeliveryP
 export function decodeScheduleChange(value: unknown): ScheduleChange {
   if (!isRecord(value)) throw new ScheduleLogError('schedule/change payload must be an object')
   if (value['version'] === SCHEDULE_CHANGE_VERSION) return decodeLegacyScheduleChange(value)
-  if (value['version'] === SCHEDULE_DELIVERY_VERSION) return decodeDeliveryChange(value)
-  throw new ScheduleLogError('schedule/change version must be 1 or 2')
+  throw new ScheduleLogError('schedule/change version must be 1')
+}
+
+/**
+ * Decode one strict supported `schedule/delivery` payload.
+ * @param value - Untrusted durable JSON value.
+ * @returns Detached, frozen version-2 delivery change.
+ */
+export function decodeScheduleDeliveryChange(
+  value: unknown,
+): ScheduleDeliveryPendingChange | ScheduleDeliveryCompleteChange {
+  if (!isRecord(value)) throw new ScheduleLogError('schedule/delivery payload must be an object')
+  if (value['version'] === SCHEDULE_DELIVERY_VERSION) return decodeDeliveryRecord(value)
+  throw new ScheduleLogError('schedule/delivery version must be 2')
 }
 
 /**
@@ -836,23 +863,115 @@ function validatePendingChange(
   }
 }
 
-/** Advance every schedule admitted by one canonical pending mutation. */
-function advancePendingDecision(
-  active: Map<ScheduleIdType, ScheduleRecord>,
+/** Capture every schedule reserved by one canonical pending mutation. */
+function pendingDecisionRecords(
   decision: Exclude<ScheduleDueDecision, { readonly kind: 'wait' }>,
 ): readonly ScheduleRecord[] {
-  if (decision.kind === 'one-shot') {
-    active.delete(decision.record.id)
-    return [decision.record]
+  return decision.kind === 'one-shot'
+    ? [decision.record]
+    : decision.reminders.map(reminder => reminder.record)
+}
+
+interface LegacyDeliveryCandidate {
+  readonly text: string
+  readonly scheduleIds: ReadonlySet<ScheduleIdType>
+}
+
+/** Reconstruct the exact message an old runtime queued before one v1 dispatch. */
+function legacyDeliveryCandidate(
+  legacyActive: ReadonlyMap<ScheduleIdType, ScheduleRecord>,
+  change: DecodedDispatch,
+): LegacyDeliveryCandidate {
+  const record = legacyActive.get(change.id)
+  if (record === undefined) {
+    throw new ScheduleLogError(`schedule dispatch targets inactive id ${JSON.stringify(change.id)}`)
   }
-  const records: ScheduleRecord[] = []
-  for (const reminder of decision.reminders) {
-    records.push(reminder.record)
-    const next = resolveEveryOccurrence(reminder.record, Date.parse(decision.acceptedAt)).nextScheduledAt
-    if (next === undefined) active.delete(reminder.record.id)
-    else active.set(reminder.record.id, Object.freeze({ ...reminder.record, scheduledAt: next }))
+  if (record.kind !== 'every') {
+    return Object.freeze({
+      text: renderReminderFraming(record),
+      scheduleIds: new Set([record.id]),
+    })
   }
-  return records
+  if (!('acceptedAt' in change)) {
+    throw new ScheduleLogError('every dispatch must contain acceptedAt')
+  }
+  const acceptedAt = Date.parse(change.acceptedAt)
+  const reminders = [...legacyActive.values()]
+    .map((candidate, index) => ({ candidate, index }))
+    .filter((entry): entry is { candidate: EveryScheduleRecord; index: number } =>
+      entry.candidate.kind === 'every' && Date.parse(entry.candidate.scheduledAt) <= acceptedAt)
+    .sort((left, right) => Date.parse(left.candidate.scheduledAt) - Date.parse(right.candidate.scheduledAt)
+      || left.index - right.index)
+    .map(({ candidate }) => ({
+      record: candidate,
+      occurrenceAt: resolveEveryOccurrence(candidate, acceptedAt).occurrenceAt,
+    }))
+  return Object.freeze({
+    text: renderEveryReminderBatchFraming(reminders),
+    scheduleIds: new Set(reminders.map(reminder => reminder.record.id)),
+  })
+}
+
+/** Whether one reconstructed old batch contains only occurrences in the open v2 outbox row. */
+function belongsToPending(
+  candidate: LegacyDeliveryCandidate,
+  pending: PendingScheduleDelivery,
+): boolean {
+  const pendingIds = new Set(pending.occurrences.map(occurrence => occurrence.scheduleId))
+  return candidate.scheduleIds.size > 0
+    && [...candidate.scheduleIds].every(scheduleId => pendingIds.has(scheduleId))
+}
+
+/** Derive the v1 dispatch suffix still needed to make an old reader see the admitted state. */
+function withManagementDispatches(
+  pending: PendingScheduleDelivery,
+  active: ReadonlyMap<ScheduleIdType, ScheduleRecord>,
+): PendingScheduleDelivery {
+  const managementDispatches = pending.occurrences.flatMap<ScheduleDispatchChange>((occurrence) => {
+    const current = active.get(occurrence.scheduleId)
+    if (current === undefined) return []
+    if (occurrence.record.kind !== 'every') {
+      return [{ version: 1, operation: 'dispatch', id: occurrence.scheduleId }]
+    }
+    if (current.kind !== 'every') {
+      throw new ScheduleLogError('pending Every occurrence changed record kind')
+    }
+    const next = resolveEveryOccurrence(
+      occurrence.record,
+      Date.parse(pending.acceptedAt),
+    ).nextScheduledAt
+    if (next !== undefined && Date.parse(current.scheduledAt) >= Date.parse(next)) return []
+    return [{
+      version: 1,
+      operation: 'dispatch',
+      id: occurrence.scheduleId,
+      acceptedAt: pending.acceptedAt,
+    }]
+  })
+  return Object.freeze({ ...pending, managementDispatches: Object.freeze(managementDispatches) })
+}
+
+/** Resolve a buffered old-pin message only after its later v1 dispatch reconstructs exact framing. */
+function withLegacyAdmission(
+  pending: PendingScheduleDelivery,
+  candidates: readonly UserMessage[],
+): PendingScheduleDelivery {
+  if (candidates.length === 0 || pending.managementDispatches.length !== 0) return pending
+  const admitted = new Set(pending.admittedOccurrenceIds)
+  for (const candidate of candidates) {
+    const legacy = pending.legacyMessages.find(message =>
+      !isScheduleDeliveryMessageId(candidate.id)
+      && isScheduleMessageText(candidate, message.text))
+    if (legacy === undefined) {
+      throw new ScheduleLogError('pending delivery has conflicting old-pin Schedule user messages')
+    }
+    for (const occurrenceId of legacy.occurrenceIds) admitted.add(occurrenceId)
+  }
+  return Object.freeze({
+    ...pending,
+    admittedOccurrenceIds: Object.freeze([...admitted]),
+    admitted: admitted.size === pending.occurrences.length,
+  })
 }
 
 /**
@@ -873,20 +992,103 @@ export function foldScheduleEvents(
   const seenDeliveries = new Set<ScheduleDeliveryId>()
   const seenMessages = new Set<MessageId>()
   let pendingDelivery: PendingScheduleDelivery | undefined
-  let deliveryProtocolStarted = false
+  let legacyCandidates: UserMessage[] = []
+  const reconcileLegacy = (): void => {
+    if (pendingDelivery === undefined || legacyCandidates.length === 0
+      || pendingDelivery.managementDispatches.length !== 0) return
+    pendingDelivery = withLegacyAdmission(pendingDelivery, legacyCandidates)
+    legacyCandidates = []
+  }
   for (const event of events.slice(seedLength)) {
     if (event.type === 'user/message') {
-      if (!isScheduleDeliveryMessageId(event.data.id)) continue
-      if (pendingDelivery === undefined || event.data.id !== pendingDelivery.messageId) {
-        throw new ScheduleLogError('deterministic Schedule user message requires its exact pending delivery')
+      if (isScheduleDeliveryMessageId(event.data.id)) {
+        if (pendingDelivery === undefined || event.data.id !== pendingDelivery.messageId) {
+          throw new ScheduleLogError('deterministic Schedule user message requires its exact pending delivery')
+        }
+        if (pendingDelivery.managementDispatches.length !== 0) {
+          throw new ScheduleLogError('pending delivery requires matching version-1 dispatch before user/message')
+        }
+        if (pendingDelivery.admitted) {
+          throw new ScheduleLogError('pending delivery already admitted every occurrence')
+        }
+        if (!isScheduleDeliveryMessage(event.data, pendingDelivery)) {
+          throw new ScheduleLogError('pending delivery requires its exact deterministic Session user message')
+        }
+        const admittedDeterministicText = renderScheduleDeliveryFraming(pendingDelivery)
+        pendingDelivery = Object.freeze({
+          ...pendingDelivery,
+          admittedOccurrenceIds: Object.freeze(
+            pendingDelivery.occurrences.map(occurrence => occurrence.occurrenceId),
+          ),
+          admitted: true,
+          admittedDeterministicText,
+        })
+        continue
       }
-      if (pendingDelivery.admitted) {
-        throw new ScheduleLogError('pending delivery permits only one deterministic Session user message')
+      if (pendingDelivery !== undefined && isPotentialLegacyScheduleDeliveryMessage(event.data)) {
+        legacyCandidates.push(event.data)
+        reconcileLegacy()
       }
-      if (!isScheduleDeliveryMessage(event.data, pendingDelivery)) {
-        throw new ScheduleLogError('pending delivery requires its exact deterministic Session user message')
+      continue
+    }
+    if (event.type === 'schedule/delivery') {
+      if (event.ignorable !== true) {
+        throw new ScheduleLogError('schedule/delivery envelope must be marked ignorable')
       }
-      pendingDelivery = Object.freeze({ ...pendingDelivery, admitted: true })
+      const change = decodeScheduleDeliveryChange(event.data)
+      switch (change.operation) {
+        case 'delivery-pending': {
+          if (pendingDelivery !== undefined) {
+            throw new ScheduleLogError('delivery-pending cannot overlap another pending delivery')
+          }
+          if (seenDeliveries.has(change.deliveryId) || seenMessages.has(change.messageId)) {
+            throw new ScheduleLogError('delivery-pending identities must never be reused')
+          }
+          const decision = resolveScheduleDueDecision([...active.values()], Date.parse(change.acceptedAt))
+          if (decision.kind === 'wait') {
+            throw new ScheduleLogError('delivery-pending must select an actually due schedule')
+          }
+          validatePendingChange(change, decision, event.seq)
+          const records = pendingDecisionRecords(decision)
+          seenDeliveries.add(change.deliveryId)
+          seenMessages.add(change.messageId)
+          pendingDelivery = Object.freeze({
+            deliverySeq: event.seq,
+            deliveryId: change.deliveryId,
+            messageId: change.messageId,
+            acceptedAt: change.acceptedAt,
+            occurrences: Object.freeze(change.occurrences.map((occurrence, index) => {
+              const record = records[index]
+              /* v8 ignore next -- canonical validation proves equal non-empty cardinality. */
+              if (record === undefined) throw new ScheduleLogError('pending delivery record is missing')
+              return Object.freeze({ ...occurrence, record })
+            })),
+            managementDispatches: [],
+            admittedOccurrenceIds: Object.freeze([]),
+            legacyMessages: Object.freeze([]),
+            admitted: false,
+          })
+          legacyCandidates = []
+          pendingDelivery = withManagementDispatches(pendingDelivery, active)
+          break
+        }
+        case 'delivery-complete': {
+          if (pendingDelivery === undefined
+            || change.deliveryId !== pendingDelivery.deliveryId
+            || change.messageId !== pendingDelivery.messageId) {
+            throw new ScheduleLogError('delivery-complete must close the exact pending delivery')
+          }
+          if (!pendingDelivery.admitted) {
+            throw new ScheduleLogError('delivery-complete requires durable carriers for every occurrence')
+          }
+          if (pendingDelivery.managementDispatches.length !== 0) {
+            throw new ScheduleLogError('delivery-complete requires matching version-1 dispatch state')
+          }
+          pendingDelivery = undefined
+          legacyCandidates = []
+          break
+        }
+      }
       continue
     }
     if (event.type !== 'schedule/change') continue
@@ -899,68 +1101,51 @@ export function foldScheduleEvents(
         seen.add(change.schedule.id)
         active.set(change.schedule.id, change.schedule)
         break
-      case 'delete':
+      case 'delete': {
         if (!active.delete(change.id)) {
           throw new ScheduleLogError(`schedule delete targets inactive id ${JSON.stringify(change.id)}`)
         }
+        if (pendingDelivery !== undefined) {
+          pendingDelivery = withManagementDispatches(pendingDelivery, active)
+          reconcileLegacy()
+        }
         break
+      }
       case 'dispatch': {
-        if (deliveryProtocolStarted) {
-          throw new ScheduleLogError('legacy dispatch cannot follow version-2 delivery protocol')
-        }
+        const legacyCandidate = legacyDeliveryCandidate(active, change)
         const record = active.get(change.id)
-        if (record === undefined) {
-          throw new ScheduleLogError(`schedule dispatch targets inactive id ${JSON.stringify(change.id)}`)
-        }
+        /* v8 ignore next -- legacyDeliveryCandidate proves the record exists. */
+        if (record === undefined) throw new ScheduleLogError('schedule dispatch record is missing')
         const next = dispatchedRecord(record, change)
         if (next === undefined) active.delete(change.id)
         else active.set(change.id, next)
-        break
-      }
-      case 'delivery-pending': {
+        if (pendingDelivery !== undefined
+          && pendingDelivery.occurrences.some(occurrence => occurrence.scheduleId === change.id)
+          && belongsToPending(legacyCandidate, pendingDelivery)) {
+          const occurrenceIds = pendingDelivery.occurrences
+            .filter(occurrence => legacyCandidate.scheduleIds.has(occurrence.scheduleId))
+            .map(occurrence => occurrence.occurrenceId)
+          const duplicate = pendingDelivery.legacyMessages.some(message =>
+            message.text === legacyCandidate.text
+            && message.occurrenceIds.length === occurrenceIds.length
+            && message.occurrenceIds.every((occurrenceId, index) => occurrenceId === occurrenceIds[index]))
+          if (!duplicate) {
+            pendingDelivery = Object.freeze({
+              ...pendingDelivery,
+              legacyMessages: Object.freeze([
+                ...pendingDelivery.legacyMessages,
+                Object.freeze({ text: legacyCandidate.text, occurrenceIds: Object.freeze(occurrenceIds) }),
+              ]),
+            })
+          }
+        }
         if (pendingDelivery !== undefined) {
-          throw new ScheduleLogError('delivery-pending cannot overlap another pending delivery')
+          pendingDelivery = withManagementDispatches(pendingDelivery, active)
+          reconcileLegacy()
         }
-        if (seenDeliveries.has(change.deliveryId) || seenMessages.has(change.messageId)) {
-          throw new ScheduleLogError('delivery-pending identities must never be reused')
-        }
-        const decision = resolveScheduleDueDecision([...active.values()], Date.parse(change.acceptedAt))
-        if (decision.kind === 'wait') {
-          throw new ScheduleLogError('delivery-pending must select an actually due schedule')
-        }
-        validatePendingChange(change, decision, event.seq)
-        const records = advancePendingDecision(active, decision)
-        seenDeliveries.add(change.deliveryId)
-        seenMessages.add(change.messageId)
-        deliveryProtocolStarted = true
-        pendingDelivery = Object.freeze({
-          deliverySeq: event.seq,
-          deliveryId: change.deliveryId,
-          messageId: change.messageId,
-          acceptedAt: change.acceptedAt,
-          occurrences: Object.freeze(change.occurrences.map((occurrence, index) => {
-            const record = records[index]
-            /* v8 ignore next -- canonical validation proves equal non-empty cardinality. */
-            if (record === undefined) throw new ScheduleLogError('pending delivery record is missing')
-            return Object.freeze({ ...occurrence, record })
-          })),
-          admitted: false,
-        })
         break
       }
-      case 'delivery-complete': {
-        if (pendingDelivery === undefined
-          || change.deliveryId !== pendingDelivery.deliveryId
-          || change.messageId !== pendingDelivery.messageId) {
-          throw new ScheduleLogError('delivery-complete must close the exact pending delivery')
-        }
-        if (!pendingDelivery.admitted) {
-          throw new ScheduleLogError('delivery-complete requires one exact prior Session user message')
-        }
-        pendingDelivery = undefined
-        break
-      }
-      /* v8 ignore next 3 -- decodeScheduleChange returns a closed operation union. */
+      /* v8 ignore next 3 -- decodeScheduleChange returns a closed v1 operation union. */
       default: {
         const unreachable: never = change
         throw new ScheduleLogError(`unknown decoded schedule change ${String(unreachable)}`)
@@ -1163,13 +1348,15 @@ export function renderEveryReminderBatchFraming(
 /**
  * Render the exact model-visible text owned by one pending delivery.
  * @param delivery - Replay-derived pending occurrence material.
- * @returns Stable one-shot or fixed-rate framing.
+ * @returns Stable framing for every occurrence not already represented by durable input.
  */
 export function renderScheduleDeliveryFraming(delivery: PendingScheduleDelivery): string {
-  const [first] = delivery.occurrences
-  if (first === undefined) throw new ScheduleLogError('pending delivery must contain an occurrence')
+  const admitted = new Set(delivery.admittedOccurrenceIds)
+  const occurrences = delivery.occurrences.filter(occurrence => !admitted.has(occurrence.occurrenceId))
+  const [first] = occurrences
+  if (first === undefined) throw new ScheduleLogError('pending delivery has no occurrence left to frame')
   if (first.record.kind !== 'every') return renderReminderFraming(first.record)
-  return renderEveryReminderBatchFraming(delivery.occurrences.map((occurrence) => {
+  return renderEveryReminderBatchFraming(occurrences.map((occurrence) => {
     if (occurrence.record.kind !== 'every') {
       throw new ScheduleLogError('pending fixed-rate delivery must contain only Every records')
     }
@@ -1188,8 +1375,34 @@ export function isScheduleDeliveryMessageId(value: unknown): value is MessageId 
     && DERIVED_ID_DIGEST.test(value.slice(MESSAGE_ID_PREFIX.length))
 }
 
+/** Check Schedule ownership and exact text without constraining message identity. */
+function isScheduleMessageText(message: UserMessage, text: string): boolean {
+  const source = message.source as unknown
+  const content = message.content
+  return isRecord(source)
+    && hasExactKeys(source, ['kind', 'plugin'])
+    && source['kind'] === 'plugin'
+    && source['plugin'] === 'schedule'
+    && content.length === 1
+    && content[0]?.type === 'text'
+    && content[0].text === text
+}
+
+/** Narrow a post-pending random-id message to Schedule's exact legacy carrier shape. */
+function isPotentialLegacyScheduleDeliveryMessage(message: UserMessage): boolean {
+  const source = message.source as unknown
+  const content = message.content
+  return !isScheduleDeliveryMessageId(message.id)
+    && isRecord(source)
+    && hasExactKeys(source, ['kind', 'plugin'])
+    && source['kind'] === 'plugin'
+    && source['plugin'] === 'schedule'
+    && content.length === 1
+    && content[0]?.type === 'text'
+}
+
 /**
- * Check the sole Session message allowed to close a pending delivery.
+ * Check the deterministic current-version carrier for outstanding occurrences.
  * @param message - Candidate durable user message.
  * @param delivery - Pending delivery whose deterministic identity and text must match.
  * @returns Whether every Schedule-owned message field matches exactly.
@@ -1198,14 +1411,37 @@ export function isScheduleDeliveryMessage(
   message: UserMessage,
   delivery: PendingScheduleDelivery,
 ): boolean {
-  const source = message.source as unknown
-  const content = message.content
+  const text = delivery.admittedDeterministicText
+    ?? (delivery.admitted ? undefined : renderScheduleDeliveryFraming(delivery))
   return message.id === delivery.messageId
-    && isRecord(source)
-    && hasExactKeys(source, ['kind', 'plugin'])
-    && source['kind'] === 'plugin'
-    && source['plugin'] === 'schedule'
-    && content.length === 1
-    && content[0]?.type === 'text'
-    && content[0].text === renderScheduleDeliveryFraming(delivery)
+    && text !== undefined
+    && isScheduleMessageText(message, text)
+}
+
+/**
+ * Check an old pin's random-id message reconstructed from a compatible v1 dispatch.
+ * @param message - Candidate durable or pending user message.
+ * @param delivery - Open delivery carrying its reconstructed old framing.
+ * @returns Whether the source and text exactly identify the old delivery.
+ */
+export function isLegacyScheduleDeliveryMessage(
+  message: UserMessage,
+  delivery: PendingScheduleDelivery,
+): boolean {
+  return !isScheduleDeliveryMessageId(message.id)
+    && delivery.legacyMessages.some(candidate => isScheduleMessageText(message, candidate.text))
+}
+
+/**
+ * Check either current deterministic or reconciled old-pin pending framing.
+ * @param message - Candidate Inbox message.
+ * @param delivery - Open delivery reconstructed from the Session stream.
+ * @returns Whether the message is owned by this exact delivery.
+ */
+export function isPendingScheduleDeliveryMessage(
+  message: UserMessage,
+  delivery: PendingScheduleDelivery,
+): boolean {
+  return isScheduleDeliveryMessage(message, delivery)
+    || isLegacyScheduleDeliveryMessage(message, delivery)
 }

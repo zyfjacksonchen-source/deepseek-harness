@@ -19,6 +19,10 @@ function event(data: unknown, seq: number): SessionEvent {
   return { type: 'schedule/change', seq, time: 1, data } as SessionEvent
 }
 
+function deliveryEvent(data: unknown, seq: number): SessionEvent {
+  return { type: 'schedule/delivery', seq, time: 1, data, ignorable: true } as unknown as SessionEvent
+}
+
 function create(id: string): ScheduleChange {
   return {
     version: 1,
@@ -117,7 +121,7 @@ describe('Schedule package invariant', () => {
     const pending = createScheduleDeliveryPendingChange(decision, session.seq)
     const prospective = foldScheduleEvents([
       ...session.events,
-      event(pending, session.seq),
+      deliveryEvent(pending, session.seq),
     ]).pendingDelivery
     if (prospective === undefined) throw new Error('expected pending delivery')
     const message = deliveryMessage(prospective)
@@ -125,25 +129,28 @@ describe('Schedule package invariant', () => {
     expect(() => session.append('user/message', message, { surfaceOp: 'append' }))
       .toThrow(InvariantError)
     expect(session.seq).toBe(1)
-    session.append('schedule/change', pending)
+    session.append('schedule/delivery', pending, { ignorable: true })
     expect(() => session.append('user/message', freezeMessage({
       ...message,
       content: [{ type: 'text', text: 'forged reminder' }],
     }), { surfaceOp: 'append' })).toThrow(InvariantError)
     expect(session.seq).toBe(2)
+    for (const change of foldScheduleEvents(session.events).pendingDelivery?.managementDispatches ?? []) {
+      session.append('schedule/change', change)
+    }
     session.append('user/message', message, { surfaceOp: 'append' })
     expect(() => session.append('user/message', message, { surfaceOp: 'append' }))
       .toThrow(InvariantError)
-    expect(session.seq).toBe(3)
-    session.append('schedule/change', {
+    expect(session.seq).toBe(4)
+    session.append('schedule/delivery', {
       version: 2,
       operation: 'delivery-complete',
       deliveryId: pending.deliveryId,
       messageId: pending.messageId,
-    })
+    }, { ignorable: true })
     expect(() => session.append('user/message', message, { surfaceOp: 'append' }))
       .toThrow(InvariantError)
-    expect(session.events).toHaveLength(4)
+    expect(session.events).toHaveLength(5)
     await ctx.fiber.dispose()
   })
 

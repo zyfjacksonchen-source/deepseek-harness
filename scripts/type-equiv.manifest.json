@@ -288,6 +288,26 @@
     },
     {
       "doc": "docs/subsystems/schedule.md",
+      "symbol": "ScheduleDeliveryOccurrence",
+      "source": "packages/schedule/schedule/src/types.ts"
+    },
+    {
+      "doc": "docs/subsystems/schedule.md",
+      "symbol": "ScheduleDeliveryPendingChange",
+      "source": "packages/schedule/schedule/src/types.ts"
+    },
+    {
+      "doc": "docs/subsystems/schedule.md",
+      "symbol": "ScheduleDeliveryCompleteChange",
+      "source": "packages/schedule/schedule/src/types.ts"
+    },
+    {
+      "doc": "docs/subsystems/schedule.md",
+      "symbol": "ScheduleDeliveryChange",
+      "source": "packages/schedule/schedule/src/types.ts"
+    },
+    {
+      "doc": "docs/subsystems/schedule.md",
       "symbol": "ScheduleState",
       "source": "packages/schedule/schedule/src/types.ts"
     },

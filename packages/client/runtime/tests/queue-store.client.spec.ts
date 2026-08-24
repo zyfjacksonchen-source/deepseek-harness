@@ -23,6 +23,7 @@ interface QueueFixture {
   content?: ContentBlock[]
   placement?: 'queued' | 'steering'
   message?: UserMessage
+  mutable?: boolean
 }
 
 /** Build one authoritative queue snapshot. */
@@ -33,6 +34,7 @@ function queueFrame(items: QueueFixture[]): MuxFrame {
     items: items.map(item => ({
       id: iid(item.id),
       placement: item.placement ?? 'queued',
+      mutable: item.mutable ?? true,
       message: item.message ?? createUserMessage({
         content: item.content ?? text(item.body),
         source: { kind: 'user', rpcId: rid(`rpc-${item.id}`) } as never,
@@ -78,6 +80,16 @@ describe('queue snapshot intake', () => {
         preview: 'hi [image]', text: null,
       },
     ])
+  })
+
+  it('preserves Host-owned queue mutability independently from text editability', () => {
+    const session = makeSession()
+    session.handleMuxEnvelope(rid('env-read-only'), queueFrame([{
+      id: 'schedule-reserved', body: 'scheduled reminder', mutable: false,
+    }]))
+    expect(session.getSnapshot().queue).toMatchObject([{
+      id: 'schedule-reserved', mutable: false, text: 'scheduled reminder',
+    }])
   })
 
   it('caps previews at 200 code points and preserves the full editable text', () => {

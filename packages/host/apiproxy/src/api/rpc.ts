@@ -53,6 +53,7 @@ export interface RpcErrorDetailsMap {
   'agent-busy': { reason: string }
   'attachment-error': { reason: string }
   'queue-item-not-found': { itemId: MessageId }
+  'queue-item-read-only': { itemId: MessageId }
   'steer-unavailable': { itemId: MessageId }
   /** A known slash command reported a usage/state error; the message is the command's own text. */
   'command-error': {}

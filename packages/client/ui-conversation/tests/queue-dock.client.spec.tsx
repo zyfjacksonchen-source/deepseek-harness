@@ -25,11 +25,11 @@ afterEach(cleanup)
 const SID = 's1' as SessionId
 const iid = (id: string): QueueItemId => id as QueueItemId
 
-function row(id: string, text: string | null, preview = text ?? '[image]'): QueuedMessage {
+function row(id: string, text: string | null, preview = text ?? '[image]', mutable = true): QueuedMessage {
   return {
     id: iid(id), messageId: `message-${id}` as never, placement: 'queued',
     content: text === null ? [{ type: 'image', data: 'x' } as never] : [{ type: 'text', text }],
-    preview, text,
+    preview, text, mutable,
   }
 }
 
@@ -216,6 +216,17 @@ describe('QueueDock', () => {
     expect((container.querySelectorAll('[aria-label="编辑排队消息"]')[1] as HTMLButtonElement).disabled).toBe(true)
     expect(container.querySelectorAll('[aria-label="编辑排队消息"]')[1]?.getAttribute('title'))
       .toBe('包含非文本内容，暂不支持编辑')
+  })
+
+  it('renders a plugin-owned queued row without mutation actions', () => {
+    const snap = snapshotWith([row('schedule-reserved', 'scheduled reminder', undefined, false)])
+    const source = liveSession(snap)
+    const view = render(<QueueDock {...kitFor(snap)} useSession={source.useSession} />)
+
+    expect(view.getByText('scheduled reminder')).toBeTruthy()
+    expect(view.queryByLabelText('编辑排队消息')).toBeNull()
+    expect(view.queryByLabelText('删除排队消息')).toBeNull()
+    expect(view.queryByLabelText('插话发送')).toBeNull()
   })
 
   it('edits text inline with save and cancel controls, then saves with the same item identity', async () => {

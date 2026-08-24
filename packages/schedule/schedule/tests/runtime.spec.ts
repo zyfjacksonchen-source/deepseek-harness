@@ -2,13 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { Inbox } from '@deepseek-ai/dsh-agent'
 import type { Agent, AgentCancelCause, InboxTarget } from '@deepseek-ai/dsh-agent'
-import type { UserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, freezeMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import {
   ScheduleId,
   createAfterScheduleRecord,
+  createScheduleDeliveryPendingChange,
   createEveryScheduleRecord,
   foldScheduleEvents,
+  renderReminderFraming,
+  renderScheduleDeliveryFraming,
+  resolveScheduleDueDecision,
 } from '../src/domain.ts'
 import { MAX_TIMER_DELAY_MS, ScheduleRuntime } from '../src/runtime.ts'
 
@@ -114,7 +118,7 @@ async function harness(): Promise<RuntimeHarness> {
   }
   const disposeAgent = ctx.agents.register(agent)
   ctx.on('session/event', (_session, event) => {
-    if (event.type === 'schedule/change') order.push(event.data.operation)
+    if (event.type === 'schedule/change' || event.type === 'schedule/delivery') order.push(event.data.operation)
     if (event.type === 'user/message') order.push('user-message')
   })
   ctx.on('session/flush', async () => {
@@ -191,7 +195,7 @@ describe('Schedule timer and admission runtime', () => {
     expect(test.followed).toHaveLength(1)
     expect(test.controls.releaseCount).toBe(2)
     expect(test.agent.session.events.find(event =>
-      event.type === 'schedule/change' && event.data.operation === 'delivery-complete')).toBeDefined()
+      event.type === 'schedule/delivery' && event.data.operation === 'delivery-complete')).toBeDefined()
     await runtime.dispose()
   })
 
@@ -262,10 +266,11 @@ describe('Schedule timer and admission runtime', () => {
     runtime.start()
     await settle()
 
-    expect(test.order.slice(0, 8)).toEqual([
+    expect(test.order.slice(0, 9)).toEqual([
       'flush',
       'maintenance',
       'delivery-pending',
+      'dispatch',
       'flush',
       'followup',
       'user-message',
@@ -323,7 +328,7 @@ describe('Schedule timer and admission runtime', () => {
     }])
     expect(test.followed[0]?.source).toEqual({ kind: 'plugin', plugin: 'schedule' })
     const pending = test.agent.session.events.find(event =>
-      event.type === 'schedule/change' && event.data.operation === 'delivery-pending')
+      event.type === 'schedule/delivery' && event.data.operation === 'delivery-pending')
     expect(pending?.data).toMatchObject({
       version: 2,
       operation: 'delivery-pending',
@@ -482,7 +487,7 @@ describe('Schedule runtime failure and teardown boundaries', () => {
     const stop = test.ctx.on('internal/dispatch', (_mode, eventName, args) => {
       if (eventName !== 'session/event') return
       const event = (args as unknown[])[1] as { type?: string; data?: { operation?: string } } | undefined
-      if (event?.type === 'schedule/change' && event.data?.operation === 'delivery-complete') {
+      if (event?.type === 'schedule/delivery' && event.data?.operation === 'delivery-complete') {
         throw new Error('append failed')
       }
     }, { global: true })
@@ -493,7 +498,7 @@ describe('Schedule runtime failure and teardown boundaries', () => {
     expect(test.followed).toHaveLength(1)
     expect(test.controls.releaseCount).toBe(2)
     expect(test.agent.session.events.filter(event =>
-      event.type === 'schedule/change' && event.data.operation === 'delivery-complete')).toEqual([])
+      event.type === 'schedule/delivery' && event.data.operation === 'delivery-complete')).toEqual([])
     expect(foldScheduleEvents(test.agent.session.events).pendingDelivery).toMatchObject({ admitted: true })
     runtime.requestDrive()
     await settle()
@@ -509,7 +514,7 @@ describe('Schedule runtime failure and teardown boundaries', () => {
     const stop = test.ctx.on('internal/dispatch', (_mode, eventName, args) => {
       if (eventName !== 'session/event') return
       const event = (args as unknown[])[1] as { type?: string; data?: { operation?: string } } | undefined
-      if (event?.type === 'schedule/change' && event.data?.operation === 'delivery-pending') {
+      if (event?.type === 'schedule/delivery' && event.data?.operation === 'delivery-pending') {
         throw new Error('pending append failed')
       }
     }, { global: true })
@@ -588,8 +593,78 @@ describe('Schedule runtime failure and teardown boundaries', () => {
     expect(test.agent.session.events.filter(event =>
       event.type === 'user/message' && event.data.id === pending?.messageId)).toHaveLength(1)
     expect(test.agent.session.events.filter(event =>
-      event.type === 'schedule/change' && event.data.operation === 'delivery-complete')).toHaveLength(1)
+      event.type === 'schedule/delivery' && event.data.operation === 'delivery-complete')).toHaveLength(1)
     await restarted.dispose()
+  })
+
+  it('collapses deterministic and old-pin Inbox candidates to one admitted message', async () => {
+    const test = await harness()
+    appendAfter(test, 'schedule-1', 1, Date.now() - 1_000)
+    const record = foldScheduleEvents(test.agent.session.events).active[0]
+    if (record === undefined || record.kind === 'every') throw new Error('expected due one-shot')
+    const decision = resolveScheduleDueDecision([record], Date.now())
+    if (decision.kind === 'wait') throw new Error('expected due Schedule decision')
+    const change = createScheduleDeliveryPendingChange(decision, test.agent.session.seq)
+    test.agent.session.append('schedule/delivery', change, { ignorable: true })
+    const pending = foldScheduleEvents(test.agent.session.events).pendingDelivery
+    if (pending === undefined) throw new Error('expected pending Schedule delivery')
+    const deterministic = freezeMessage({
+      id: pending.messageId,
+      role: 'user' as const,
+      content: [{ type: 'text' as const, text: renderScheduleDeliveryFraming(pending) }],
+      source: { kind: 'plugin' as const, plugin: 'schedule' },
+    })
+    const legacy = createUserMessage({
+      content: [{ type: 'text', text: renderReminderFraming(record) }],
+      source: { kind: 'plugin', plugin: 'schedule' },
+    })
+    test.agent.inbox.append('next-turn', deterministic)
+    test.agent.inbox.append('next-turn', legacy)
+    test.agent.session.append('schedule/change', {
+      version: 1, operation: 'dispatch', id: record.id,
+    })
+
+    const runtime = runtimeFor(test)
+    runtime.start()
+    await settle()
+
+    expect(test.agent.inbox.nextTurn).toEqual([])
+    expect(test.agent.session.events.filter(event => event.type === 'user/message').map(event => event.data.id))
+      .toEqual([pending.messageId])
+    expect(test.agent.session.events.some(event =>
+      event.type === 'user/message' && event.data.id === legacy.id)).toBe(false)
+    await runtime.dispose()
+  })
+
+  it('closes an admitted old-pin random message with the deterministic delivery identity', async () => {
+    const test = await harness()
+    appendAfter(test, 'schedule-1', 1, Date.now() - 1_000)
+    const record = foldScheduleEvents(test.agent.session.events).active[0]
+    if (record === undefined || record.kind === 'every') throw new Error('expected due one-shot')
+    const decision = resolveScheduleDueDecision([record], Date.now())
+    if (decision.kind === 'wait') throw new Error('expected due Schedule decision')
+    const change = createScheduleDeliveryPendingChange(decision, test.agent.session.seq)
+    test.agent.session.append('schedule/delivery', change, { ignorable: true })
+    const legacy = createUserMessage({
+      content: [{ type: 'text', text: renderReminderFraming(record) }],
+      source: { kind: 'plugin', plugin: 'schedule' },
+    })
+    test.agent.inbox.append('next-turn', legacy)
+    test.agent.session.append('schedule/change', { version: 1, operation: 'dispatch', id: record.id })
+    const [claimed] = test.agent.inbox.claim('next-turn', ++test.controls.turn)
+    if (claimed === undefined) throw new Error('expected old-pin Schedule message')
+    test.agent.session.append('user/message', claimed, { surfaceOp: 'append' })
+
+    const runtime = runtimeFor(test)
+    runtime.start()
+    await settle()
+
+    expect(test.followed).toEqual([])
+    expect(test.agent.session.events.find(event =>
+      event.type === 'schedule/delivery' && event.data.operation === 'delivery-complete')?.data)
+      .toMatchObject({ deliveryId: change.deliveryId, messageId: change.messageId })
+    expect(foldScheduleEvents(test.agent.session.events).pendingDelivery).toBeUndefined()
+    await runtime.dispose()
   })
 
   it('cold-rearms the same identity after Inbox claim is durable but user/message is absent', async () => {
@@ -619,6 +694,69 @@ describe('Schedule runtime failure and teardown boundaries', () => {
     await restarted.dispose()
   })
 
+  it('replaces a claimed old-pin message that never reached user/message', async () => {
+    const test = await harness()
+    appendAfter(test, 'schedule-1', 1, Date.now() - 1_000)
+    const record = foldScheduleEvents(test.agent.session.events).active[0]
+    if (record === undefined || record.kind === 'every') throw new Error('expected due one-shot')
+    const decision = resolveScheduleDueDecision([record], Date.now())
+    if (decision.kind === 'wait') throw new Error('expected due Schedule decision')
+    const change = createScheduleDeliveryPendingChange(decision, test.agent.session.seq)
+    test.agent.session.append('schedule/delivery', change, { ignorable: true })
+    test.agent.session.append('schedule/change', { version: 1, operation: 'dispatch', id: record.id })
+    const legacy = createUserMessage({
+      content: [{ type: 'text', text: renderReminderFraming(record) }],
+      source: { kind: 'plugin', plugin: 'schedule' },
+    })
+    test.agent.inbox.append('next-turn', legacy)
+    expect(test.agent.inbox.claim('next-turn', ++test.controls.turn).map(message => message.id))
+      .toEqual([legacy.id])
+    expect(test.agent.session.events.filter(event => event.type === 'user/message')).toEqual([])
+
+    const runtime = runtimeFor(test)
+    runtime.start()
+    await settle()
+
+    expect(test.followed.map(message => message.id)).toEqual([change.messageId])
+    expect(test.agent.session.events.filter(event => event.type === 'user/message').map(event => event.data.id))
+      .toEqual([change.messageId])
+    expect(foldScheduleEvents(test.agent.session.events).pendingDelivery).toBeUndefined()
+    await runtime.dispose()
+  })
+
+  it('does not complete while a duplicate pending Inbox message cannot be removed', async () => {
+    const test = await harness()
+    appendAfter(test, 'schedule-1', 1, Date.now() - 1_000)
+    const record = foldScheduleEvents(test.agent.session.events).active[0]
+    if (record === undefined || record.kind === 'every') throw new Error('expected due one-shot')
+    const decision = resolveScheduleDueDecision([record], Date.now())
+    if (decision.kind === 'wait') throw new Error('expected due Schedule decision')
+    const change = createScheduleDeliveryPendingChange(decision, test.agent.session.seq)
+    test.agent.session.append('schedule/delivery', change, { ignorable: true })
+    test.agent.session.append('schedule/change', { version: 1, operation: 'dispatch', id: record.id })
+    const pending = foldScheduleEvents(test.agent.session.events).pendingDelivery
+    if (pending === undefined) throw new Error('expected pending Schedule delivery')
+    const duplicate = freezeMessage({
+      id: pending.messageId,
+      role: 'user' as const,
+      content: [{ type: 'text' as const, text: renderScheduleDeliveryFraming(pending) }],
+      source: { kind: 'plugin' as const, plugin: 'schedule' },
+    })
+    test.agent.session.append('user/message', duplicate, { surfaceOp: 'append' })
+    test.agent.inbox.append('next-turn', duplicate)
+    vi.spyOn(test.agent.inbox, 'remove').mockReturnValue(false)
+
+    const runtime = runtimeFor(test)
+    runtime.start()
+    await settle()
+
+    expect(test.agent.inbox.nextTurn.map(message => message.id)).toEqual([pending.messageId])
+    expect(test.agent.session.events.some(event =>
+      event.type === 'schedule/delivery' && event.data.operation === 'delivery-complete')).toBe(false)
+    expect(foldScheduleEvents(test.agent.session.events).pendingDelivery).toMatchObject({ admitted: true })
+    await runtime.dispose()
+  })
+
   it('cold-completes an admitted user message without another followup', async () => {
     const test = await harness()
     appendAfter(test, 'schedule-1', 1, Date.now() - 1_000)
@@ -638,7 +776,7 @@ describe('Schedule runtime failure and teardown boundaries', () => {
 
     expect(test.followed).toHaveLength(1)
     expect(test.agent.session.events.filter(event =>
-      event.type === 'schedule/change' && event.data.operation === 'delivery-complete')).toHaveLength(1)
+      event.type === 'schedule/delivery' && event.data.operation === 'delivery-complete')).toHaveLength(1)
     expect(foldScheduleEvents(test.agent.session.events).pendingDelivery).toBeUndefined()
     await restarted.dispose()
   })
@@ -654,7 +792,7 @@ describe('Schedule runtime failure and teardown boundaries', () => {
     expect(test.controls.flushCount).toBe(5)
     expect(test.followed).toHaveLength(1)
     expect(test.agent.session.events.filter(event =>
-      event.type === 'schedule/change' && event.data.operation === 'delivery-complete')).toHaveLength(1)
+      event.type === 'schedule/delivery' && event.data.operation === 'delivery-complete')).toHaveLength(1)
     first.requestDrive()
     await settle()
     expect(test.followed).toHaveLength(1)
@@ -763,7 +901,7 @@ describe('Schedule runtime failure and teardown boundaries', () => {
     await settle()
     expect(test.followed).toEqual([])
     expect(test.agent.session.events.filter(event =>
-      event.type === 'schedule/change' && event.data.operation === 'delivery-pending')).toEqual([])
+      event.type === 'schedule/delivery' && event.data.operation === 'delivery-pending')).toEqual([])
   })
 
   it('faults on corrupt or unreadable durable state after preflight', async () => {

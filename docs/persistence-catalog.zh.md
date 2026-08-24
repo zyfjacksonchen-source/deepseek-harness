@@ -592,15 +592,31 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 
 ```ts persistence-catalog
 /**
- * Versioned Schedule mutation. The owning package validates the complete
- * session-local transition stream before accepting a candidate event.
+ * Version-1 Schedule management mutation and sole business-state authority.
+ * The owning package validates the complete session-local transition stream
+ * before accepting a candidate event.
  */
 'schedule/change': ScheduleChange
 ```
 
 类型：[ScheduleChange](subsystems/schedule.md)
 
-来源：[`packages/schedule/schedule/src/types.ts:219`](../packages/schedule/schedule/src/types.ts)
+来源：[`packages/schedule/schedule/src/types.ts:265`](../packages/schedule/schedule/src/types.ts)
+
+<a id="scheduledelivery--log-only"></a>
+
+#### `schedule/delivery` — log-only
+
+```ts persistence-catalog
+/**
+ * Version-2 delivery outbox record in the same Session stream. Writers mark
+ * every envelope `ignorable: true`; old readers may skip it because
+ * `schedule/change` retains the complete version-1 management state.
+ */
+'schedule/delivery': ScheduleDeliveryChange
+```
+
+来源：[`packages/schedule/schedule/src/types.ts:271`](../packages/schedule/schedule/src/types.ts)
 
 ### `session/*`
 

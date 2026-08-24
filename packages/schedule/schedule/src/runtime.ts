@@ -9,6 +9,7 @@ import { freezeMessage } from '@deepseek-ai/dsh-llm'
 import {
   createScheduleDeliveryPendingChange,
   foldScheduleEvents,
+  isPendingScheduleDeliveryMessage,
   isScheduleDeliveryMessage,
   renderScheduleDeliveryFraming,
   resolveScheduleDueDecision,
@@ -186,7 +187,7 @@ export class ScheduleRuntime {
 
   /** Requeue the exact pending message, replacing a cold pending copy to wake its Agent. */
   private queuePending(delivery: PendingScheduleDelivery): boolean {
-    const message = freezeMessage({
+    const deterministic = freezeMessage({
       id: delivery.messageId,
       role: 'user' as const,
       content: [{ type: 'text' as const, text: renderScheduleDeliveryFraming(delivery) }],
@@ -199,21 +200,24 @@ export class ScheduleRuntime {
       )
       return false
     }
-    const matching = this.agent.inbox.nextTurn
-      .filter(candidate => candidate.id === delivery.messageId)
-    if (matching.length > 1 || (matching[0] !== undefined
-      && !isScheduleDeliveryMessage(matching[0], delivery))) {
+    const reserved = this.agent.inbox.nextTurn
+      .find(candidate => candidate.id === delivery.messageId)
+    if (reserved !== undefined && !isScheduleDeliveryMessage(reserved, delivery)) {
       this.faulted = true
       this.ctx.logger.warn(
         `schedule: pending Inbox identity conflicted for agent "${this.agent.id}"`,
       )
       return false
     }
+    const matching = this.agent.inbox.nextTurn
+      .filter(candidate => isPendingScheduleDeliveryMessage(candidate, delivery))
     try {
-      if (matching[0] !== undefined && !this.agent.inbox.remove(delivery.messageId)) {
-        throw new Error('pending message disappeared before Schedule could wake it')
+      for (const candidate of matching) {
+        if (!this.agent.inbox.remove(candidate.id)) {
+          throw new Error('pending message disappeared before Schedule could wake it')
+        }
       }
-      this.agent.followup(message)
+      this.agent.followup(deterministic)
       return true
     } catch (error: unknown) {
       if (this.isLive()) {
@@ -221,7 +225,25 @@ export class ScheduleRuntime {
           `schedule: deterministic followup failed for agent "${this.agent.id}": ${renderThrown(error)}`,
         )
       }
-      return this.agent.inbox.nextTurn.some(candidate => isScheduleDeliveryMessage(candidate, delivery))
+      return this.agent.inbox.nextTurn.some(candidate =>
+        isPendingScheduleDeliveryMessage(candidate, delivery))
+    }
+  }
+
+  /** Remove any second compatible copy after one current or old-pin message is durable. */
+  private discardPendingCopies(delivery: PendingScheduleDelivery): void {
+    for (const message of [...this.agent.inbox.nextStep, ...this.agent.inbox.nextTurn]) {
+      if (isPendingScheduleDeliveryMessage(message, delivery)
+        && !this.agent.inbox.remove(message.id)) {
+        throw new Error('pending message disappeared before Schedule could discard its duplicate')
+      }
+    }
+  }
+
+  /** Append the still-missing v1 state mirrors before any reminder can enter Inbox. */
+  private appendManagementDispatches(delivery: PendingScheduleDelivery): void {
+    for (const change of delivery.managementDispatches) {
+      this.agent.session.append('schedule/change', change)
     }
   }
 
@@ -258,16 +280,36 @@ export class ScheduleRuntime {
         const claimed = this.readFolded()
         if (claimed === undefined) return 'none'
         if (claimed.pendingDelivery !== undefined) {
-          if (claimed.pendingDelivery.admitted) {
-            this.agent.session.append('schedule/change', {
+          let delivery = claimed.pendingDelivery
+          if (delivery.managementDispatches.length !== 0) {
+            this.appendManagementDispatches(delivery)
+            try {
+              await flushSchedulePersistence(this.ctx, this.agent.session)
+            } catch (error: unknown) {
+              if (this.isLive()) {
+                this.ctx.logger.warn(
+                  `schedule: management dispatch barrier failed for agent "${this.agent.id}": ${renderThrown(error)}`,
+                )
+              }
+              return 'none'
+            }
+            if (!this.isRunnable()) return 'none'
+            const reconciled = this.readFolded()?.pendingDelivery
+            if (reconciled === undefined || reconciled.deliveryId !== delivery.deliveryId
+              || reconciled.managementDispatches.length !== 0) return 'none'
+            delivery = reconciled
+          }
+          if (delivery.admitted) {
+            this.discardPendingCopies(delivery)
+            this.agent.session.append('schedule/delivery', {
               version: 2,
               operation: 'delivery-complete',
-              deliveryId: claimed.pendingDelivery.deliveryId,
-              messageId: claimed.pendingDelivery.messageId,
-            })
+              deliveryId: delivery.deliveryId,
+              messageId: delivery.messageId,
+            }, { ignorable: true })
             return 'completed'
           }
-          return this.queuePending(claimed.pendingDelivery) ? 'queued' : 'none'
+          return this.queuePending(delivery) ? 'queued' : 'none'
         }
         const decisionNow = Date.now()
         const decision = this.decide(claimed, decisionNow)
@@ -278,7 +320,12 @@ export class ScheduleRuntime {
         }
         const pendingChange = createScheduleDeliveryPendingChange(decision, this.agent.session.seq)
         try {
-          this.agent.session.append('schedule/change', pendingChange)
+          this.agent.session.append('schedule/delivery', pendingChange, { ignorable: true })
+          const reserved = this.readFolded()?.pendingDelivery
+          if (reserved === undefined || reserved.deliveryId !== pendingChange.deliveryId) {
+            throw new Error('delivery-pending did not become the current Schedule outbox row')
+          }
+          this.appendManagementDispatches(reserved)
         } catch (error: unknown) {
           this.faulted = true
           this.clearTimer()
@@ -301,7 +348,8 @@ export class ScheduleRuntime {
         const admitted = this.readFolded()?.pendingDelivery
         if (admitted === undefined
           || admitted.deliveryId !== pendingChange.deliveryId
-          || admitted.messageId !== pendingChange.messageId) return 'none'
+          || admitted.messageId !== pendingChange.messageId
+          || admitted.managementDispatches.length !== 0) return 'none'
         return this.queuePending(admitted) ? 'queued' : 'none'
       })
     } catch (_busy: unknown) {

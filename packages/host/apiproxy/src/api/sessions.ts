@@ -357,8 +357,8 @@ export interface SessionsApi {
   Promise<RpcResponse<{ attachment: ImageAttachmentRef; data: string }>>
 
   /**
-   * Edits, removes, or strictly steers one pending queued occurrence on an ordinary session.
-   * Session-backed subagents reject with `agent-busy`.
+   * Edits, removes, or strictly steers one user-owned pending queued occurrence on an ordinary session.
+   * Producer-owned input is read-only; session-backed subagents reject with `agent-busy`.
    */
   updateQueue(request: RpcRequest<{ sessionId: SessionId; itemId: MessageId; action: QueueAction }>):
   Promise<RpcResponse<{ accepted: true }>>

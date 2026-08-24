@@ -108,7 +108,7 @@ export interface EveryScheduleDispatchChange {
 /** Durable dispatch shapes supported by the current rule set. */
 export type ScheduleDispatchChange = OneShotScheduleDispatchChange | EveryScheduleDispatchChange
 
-/** One occurrence admitted into a version-2 delivery batch. */
+/** One occurrence reserved in a version-2 delivery batch. */
 export interface ScheduleDeliveryOccurrence {
   /** Deterministic identity derived from the pending event seq, schedule id, and occurrence instant. */
   readonly occurrenceId: ScheduleOccurrenceId
@@ -118,7 +118,7 @@ export interface ScheduleDeliveryOccurrence {
   readonly occurrenceAt: string
 }
 
-/** Durably advances schedules before their deterministic Inbox message is queued. */
+/** Durably reserves occurrences before their deterministic Inbox message is queued. */
 export interface ScheduleDeliveryPendingChange {
   readonly version: 2
   readonly operation: 'delivery-pending'
@@ -126,13 +126,13 @@ export interface ScheduleDeliveryPendingChange {
   readonly deliveryId: ScheduleDeliveryId
   /** Deterministic Session-local user-message identity for the batch. */
   readonly messageId: MessageId
-  /** Wall-clock decision time that selected and advanced the occurrences. */
+  /** Wall-clock decision time that selected the occurrences. */
   readonly acceptedAt: string
   /** One one-shot occurrence or the complete due fixed-rate batch. */
   readonly occurrences: readonly ScheduleDeliveryOccurrence[]
 }
 
-/** Closes one pending delivery after its exact user message is in the Session log. */
+/** Closes one pending delivery after exact durable carriers cover every occurrence. */
 export interface ScheduleDeliveryCompleteChange {
   readonly version: 2
   readonly operation: 'delivery-complete'
@@ -143,12 +143,11 @@ export interface ScheduleDeliveryCompleteChange {
 /** Strict version-2 delivery mutation union. */
 export type ScheduleDeliveryChange = ScheduleDeliveryPendingChange | ScheduleDeliveryCompleteChange
 
-/** Strict durable Schedule mutation union with lossless version-1 replay. */
+/** Strict durable version-1 Schedule management mutation union. */
 export type ScheduleChange =
   | ScheduleCreateChange
   | ScheduleDeleteChange
   | ScheduleDispatchChange
-  | ScheduleDeliveryChange
 
 /** Current delivery timing derived from the durable record and wall clock. */
 export type ScheduleState = 'scheduled' | 'overdue'
@@ -259,9 +258,16 @@ export type ScheduleDeleteValue = ScheduleDeleteResult | ScheduleToolError
 declare module '@deepseek-ai/dsh-session/types' {
   interface SessionEventMap {
     /**
-     * Versioned Schedule mutation. The owning package validates the complete
-     * session-local transition stream before accepting a candidate event.
+     * Version-1 Schedule management mutation and sole business-state authority.
+     * The owning package validates the complete session-local transition stream
+     * before accepting a candidate event.
      */
     'schedule/change': ScheduleChange
+    /**
+     * Version-2 delivery outbox record in the same Session stream. Writers mark
+     * every envelope `ignorable: true`; old readers may skip it because
+     * `schedule/change` retains the complete version-1 management state.
+     */
+    'schedule/delivery': ScheduleDeliveryChange
   }
 }

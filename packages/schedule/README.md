@@ -10,4 +10,6 @@ The Schedule family owns reminders whose durable state lives in the original Ses
 
 The package deliberately exposes no public Schedule service or mutable database. Tools and runtime append to the Session stream; due work enters the same conversation through the Agent's ordinary follow-up queue.
 
+Version-1 `schedule/change` remains the complete management and active-state authority. Version-2 `schedule/delivery` is an ignorable auxiliary outbox record in the same Session stream: pending plus the full v1 dispatch batch is checkpointed before queue admission, and complete is checkpointed only after the exact user message is durable. Current Hosts expose Schedule queue rows as producer-owned and reject public edit, steer, or cancel operations. Rollback admission is fail-closed: after quiescing and flushing, the updater uses `ctx.sessionPersistence.list()` plus `inspect()` and requires every `foldScheduleEvents(...).pendingDelivery` to be absent before selecting an old pin.
+
 See [Session-local Schedule](../../docs/subsystems/schedule.md) for the durable record, transition, view, and delivery contracts.

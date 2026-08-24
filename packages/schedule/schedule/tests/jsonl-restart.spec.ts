@@ -73,7 +73,7 @@ function waitForCompletion(ctx: Context, sessionId: SessionId): Promise<void> {
   return new Promise((resolve) => {
     const stop = ctx.on('session/event', (session, event) => {
       if (session.id !== sessionId
-        || event.type !== 'schedule/change'
+        || event.type !== 'schedule/delivery'
         || event.data.operation !== 'delivery-complete') return
       stop()
       resolve()
@@ -93,11 +93,15 @@ function appendPendingDelivery(session: Session): PendingScheduleDelivery {
   const decision = resolveScheduleDueDecision([record], Date.now())
   if (decision.kind === 'wait') throw new Error('expected overdue Schedule decision')
   session.append(
-    'schedule/change',
+    'schedule/delivery',
     createScheduleDeliveryPendingChange(decision, session.seq),
+    { ignorable: true },
   )
-  const pending = foldScheduleEvents(session.events).pendingDelivery
+  let pending = foldScheduleEvents(session.events).pendingDelivery
   if (pending === undefined) throw new Error('expected pending Schedule delivery')
+  for (const change of pending.managementDispatches) session.append('schedule/change', change)
+  pending = foldScheduleEvents(session.events).pendingDelivery
+  if (pending === undefined) throw new Error('expected mirrored pending Schedule delivery')
   return pending
 }
 
@@ -161,9 +165,9 @@ describe('Schedule production JSONL restart', () => {
     expect(adapter.requests).toHaveLength(requests)
     expect(stored.events.filter(event =>
       event.type === 'user/message' && event.data.id === pending.messageId)).toHaveLength(1)
-    expect(stored.events.filter(event => event.type === 'schedule/change'
+    expect(stored.events.filter(event => event.type === 'schedule/delivery'
       && event.data.operation === 'delivery-pending')).toHaveLength(1)
-    expect(stored.events.filter(event => event.type === 'schedule/change'
+    expect(stored.events.filter(event => event.type === 'schedule/delivery'
       && event.data.operation === 'delivery-complete')).toHaveLength(1)
     expect(foldScheduleEvents(stored.events, stored.meta.seedLength ?? 0)).toEqual({
       active: [],
@@ -201,7 +205,7 @@ describe('Schedule production JSONL restart', () => {
     expect(foldScheduleEvents(dispatchedStored.events, dispatchedStored.meta.seedLength ?? 0).active)
       .toEqual([])
     const deliveries = dispatchedStored.events.flatMap((event) => {
-      if (event.type !== 'schedule/change'
+      if (event.type !== 'schedule/delivery'
         || (event.data.operation !== 'delivery-pending' && event.data.operation !== 'delivery-complete')) return []
       return [event.data]
     })
@@ -228,10 +232,10 @@ describe('Schedule production JSONL restart', () => {
 
     expect(replayAdapter.requests).toEqual([])
     expect(replayHandle.agent.session.events.filter(event =>
-      event.type === 'schedule/change' && event.data.operation === 'delivery-complete')).toHaveLength(1)
+      event.type === 'schedule/delivery' && event.data.operation === 'delivery-complete')).toHaveLength(1)
     const replayedStored = await replayed.sessionPersistence.inspect(sessionId)
     expect(replayedStored.events.filter(event =>
-      event.type === 'schedule/change' && event.data.operation === 'delivery-complete')).toHaveLength(1)
+      event.type === 'schedule/delivery' && event.data.operation === 'delivery-complete')).toHaveLength(1)
     await replayHandle.dispose()
     await disposeContext(replayed)
   })

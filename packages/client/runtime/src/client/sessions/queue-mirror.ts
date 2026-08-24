@@ -49,6 +49,7 @@ export class SessionQueueMirror {
   replace(items: QueueItems): void {
     this.current = items.map(item => ({
       id: item.id,
+      mutable: item.mutable,
       messageId: item.message.id,
       placement: item.placement,
       content: item.message.content,

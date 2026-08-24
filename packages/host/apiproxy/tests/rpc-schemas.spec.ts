@@ -74,6 +74,7 @@ describe('rpcErrorSchema', () => {
     }).code).toBe('model-unavailable')
     expect(rpcErrorSchema.parse({ code: 'agent-busy', message: 'm', details: { reason: 'r' } }).code).toBe('agent-busy')
     expect(rpcErrorSchema.parse({ code: 'queue-item-not-found', message: 'm', details: { itemId: 'i' } }).code).toBe('queue-item-not-found')
+    expect(rpcErrorSchema.parse({ code: 'queue-item-read-only', message: 'm', details: { itemId: 'i' } }).code).toBe('queue-item-read-only')
     expect(rpcErrorSchema.parse({ code: 'command-error', message: 'm', details: {} }).code).toBe('command-error')
     expect(rpcErrorSchema.parse({ code: 'unknown-command', message: 'm', details: {} }).code).toBe('unknown-command')
     expect(rpcErrorSchema.parse({ code: 'title-invalid', message: 'm', details: { sessionId: 's' } }).code).toBe('title-invalid')
@@ -449,6 +450,7 @@ describe('events frame schemas', () => {
         {
           id: 'm1',
           placement: 'queued',
+          mutable: true,
           message: { id: 'm1', role: 'user', content: [{ type: 'text', text: 'queued prompt' }], source: { kind: 'user', rpcId: 'r9' } },
         },
       ] },
@@ -495,7 +497,7 @@ describe('events frame schemas', () => {
 
   it('accepts every queue placement and rejects unknown placements', () => {
     const item = (placement: string) => ({ type: 'session/queue', sessionId: 's', items: [{
-      id: 'm', placement,
+      id: 'm', placement, mutable: true,
       message: { id: 'm', role: 'user', content: [], source: { kind: 'user' } },
     }] })
     for (const placement of ['queued', 'steering', 'context']) {

@@ -180,7 +180,7 @@ export class InputHub implements SessionInputResolver {
    * @param shell - the resident shell (notice outlet).
    */
   private async steerQueue(session: SessionFace, shell: SessionInputShell): Promise<void> {
-    const queued = session.getSnapshot().queue.filter(item => item.placement === 'queued')
+    const queued = session.getSnapshot().queue.filter(item => item.placement === 'queued' && item.mutable)
     if (queued.length === 0) return
     for (const item of queued) {
       const result = await session.updateQueue(item.id, { kind: 'steer' })
