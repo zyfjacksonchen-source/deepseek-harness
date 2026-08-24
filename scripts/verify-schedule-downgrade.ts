@@ -48,6 +48,17 @@ async function run(command: string, args: readonly string[], cwd = repoRoot): Pr
   })
 }
 
+/** Run either archived or current driver without invoking pnpm dependency self-healing. */
+async function runDriver(
+  driverPath: string,
+  phase: string,
+  stateRoot: string,
+  metadata: string,
+  cwd = repoRoot,
+): Promise<void> {
+  await run(process.execPath, ['--import', 'tsx', driverPath, phase, stateRoot, metadata], cwd)
+}
+
 async function capture(command: string, args: readonly string[]): Promise<string> {
   return await new Promise<string>((resolvePromise, reject) => {
     const chunks: Buffer[] = []
@@ -59,6 +70,11 @@ async function capture(command: string, args: readonly string[]): Promise<string
       else reject(new Error(`${command} exited with ${code ?? signal ?? 'unknown status'}`))
     })
   })
+}
+
+/** Reject uncommitted bytes before they can seed evidence attributed to HEAD. */
+function assertCleanCandidate(status: string): void {
+  assert.equal(status, '', 'Schedule downgrade gate requires a clean candidate worktree')
 }
 
 function appendLegacyPrefix(
@@ -193,6 +209,8 @@ async function seedCandidate(root: string, metadataPath: string): Promise<void> 
 }
 
 async function main(): Promise<void> {
+  const candidateStatus = await capture('git', ['status', '--porcelain'])
+  assertCleanCandidate(candidateStatus)
   const scratch = await mkdtemp(join(tmpdir(), 'dsh-schedule-downgrade-'))
   let complete = false
   try {
@@ -200,12 +218,9 @@ async function main(): Promise<void> {
     const oldRoot = join(scratch, 'old-source')
     const archive = join(scratch, 'old-source.tar')
     const metadata = join(scratch, 'gate.json')
-    await mkdir(oldRoot)
-
-    const [candidateCommit, candidateTree, candidateStatus, oldCommit, oldTree, pnpmVersion] = await Promise.all([
+    const [candidateCommit, candidateTree, oldCommit, oldTree, pnpmVersion] = await Promise.all([
       capture('git', ['rev-parse', 'HEAD']),
       capture('git', ['rev-parse', 'HEAD^{tree}']),
-      capture('git', ['status', '--porcelain']),
       capture('git', ['rev-parse', OLD_COMMIT]),
       capture('git', ['rev-parse', `${OLD_COMMIT}^{tree}`]),
       capture('pnpm', ['--version']),
@@ -213,7 +228,7 @@ async function main(): Promise<void> {
     process.stdout.write([
       `candidate commit: ${candidateCommit}`,
       `candidate tree: ${candidateTree}`,
-      `candidate worktree: ${candidateStatus.length === 0 ? 'clean' : 'dirty (payload includes uncommitted changes)'}`,
+      'candidate worktree: clean',
       `old commit: ${oldCommit}`,
       `old tree: ${oldTree}`,
       `node: ${process.version}`,
@@ -221,6 +236,7 @@ async function main(): Promise<void> {
       '',
     ].join('\n'))
 
+    await mkdir(oldRoot)
     await seedCandidate(stateRoot, metadata)
     await run('git', ['archive', '--format=tar', '--output', archive, oldCommit])
     await run('tar', ['-xf', archive, '-C', oldRoot])
@@ -231,13 +247,13 @@ async function main(): Promise<void> {
     await mkdir(dirname(oldDriver), { recursive: true })
     await copyFile(driver, oldDriver)
 
-    await run('pnpm', ['exec', 'tsx', oldDriver, 'old-initial', stateRoot, metadata], oldRoot)
-    await run('pnpm', ['exec', 'tsx', driver, 'current-upgrade', stateRoot, metadata])
-    await run('pnpm', ['exec', 'tsx', oldDriver, 'old-final', stateRoot, metadata], oldRoot)
-    await run('pnpm', ['exec', 'tsx', oldDriver, 'forced-old-crash', stateRoot, metadata], oldRoot)
-    await run('pnpm', ['exec', 'tsx', oldDriver, 'forced-old-recover', stateRoot, metadata], oldRoot)
-    await run('pnpm', ['exec', 'tsx', driver, 'forced-current-upgrade', stateRoot, metadata])
-    await run('pnpm', ['exec', 'tsx', oldDriver, 'forced-old-final', stateRoot, metadata], oldRoot)
+    await runDriver(oldDriver, 'old-initial', stateRoot, metadata, oldRoot)
+    await runDriver(driver, 'current-upgrade', stateRoot, metadata)
+    await runDriver(oldDriver, 'old-final', stateRoot, metadata, oldRoot)
+    await runDriver(oldDriver, 'forced-old-crash', stateRoot, metadata, oldRoot)
+    await runDriver(oldDriver, 'forced-old-recover', stateRoot, metadata, oldRoot)
+    await runDriver(driver, 'forced-current-upgrade', stateRoot, metadata)
+    await runDriver(oldDriver, 'forced-old-final', stateRoot, metadata, oldRoot)
     complete = true
     process.stdout.write(
       'Schedule rollback gate passed: admission-ready old-pin loads stayed exact; policy-bypass pending probes validated containment only; forced old→old crash produced NEGATIVE evidence and remains an expected blocker.\n',
