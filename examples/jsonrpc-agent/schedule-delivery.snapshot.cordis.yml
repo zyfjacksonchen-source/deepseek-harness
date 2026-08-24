@@ -1,0 +1,8 @@
+# Keyless variant: retain the ordinary replay composition and add the same
+# Schedule delivery event fixture as the live recording composition.
+- id: base
+  name: '@deepseek-ai/cordis-plugin-include'
+  config:
+    path: ./cordis.snapshot.yml
+- id: schedule-delivery-seed
+  name: './tests/fixtures/schedule-delivery-seed.ts'

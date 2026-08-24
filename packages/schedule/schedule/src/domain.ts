@@ -874,7 +874,10 @@ function pendingDecisionRecords(
 
 interface LegacyDeliveryCandidate {
   readonly text: string
-  readonly scheduleIds: ReadonlySet<ScheduleIdType>
+  readonly occurrences: readonly {
+    readonly scheduleId: ScheduleIdType
+    readonly occurrenceAt: string
+  }[]
 }
 
 /** Reconstruct the exact message an old runtime queued before one v1 dispatch. */
@@ -889,7 +892,7 @@ function legacyDeliveryCandidate(
   if (record.kind !== 'every') {
     return Object.freeze({
       text: renderReminderFraming(record),
-      scheduleIds: new Set([record.id]),
+      occurrences: Object.freeze([{ scheduleId: record.id, occurrenceAt: record.scheduledAt }]),
     })
   }
   if (!('acceptedAt' in change)) {
@@ -908,7 +911,10 @@ function legacyDeliveryCandidate(
     }))
   return Object.freeze({
     text: renderEveryReminderBatchFraming(reminders),
-    scheduleIds: new Set(reminders.map(reminder => reminder.record.id)),
+    occurrences: Object.freeze(reminders.map(reminder => Object.freeze({
+      scheduleId: reminder.record.id,
+      occurrenceAt: reminder.occurrenceAt,
+    }))),
   })
 }
 
@@ -917,9 +923,9 @@ function belongsToPending(
   candidate: LegacyDeliveryCandidate,
   pending: PendingScheduleDelivery,
 ): boolean {
-  const pendingIds = new Set(pending.occurrences.map(occurrence => occurrence.scheduleId))
-  return candidate.scheduleIds.size > 0
-    && [...candidate.scheduleIds].every(scheduleId => pendingIds.has(scheduleId))
+  return candidate.occurrences.length > 0
+    && candidate.occurrences.every(wanted => pending.occurrences.some(occurrence =>
+      occurrence.scheduleId === wanted.scheduleId && occurrence.occurrenceAt === wanted.occurrenceAt))
 }
 
 /** Derive the v1 dispatch suffix still needed to make an old reader see the admitted state. */
@@ -993,11 +999,26 @@ export function foldScheduleEvents(
   const seenMessages = new Set<MessageId>()
   let pendingDelivery: PendingScheduleDelivery | undefined
   let legacyCandidates: UserMessage[] = []
-  const reconcileLegacy = (): void => {
+  const laterLegacyTexts = new Set<string>()
+  const reconcileLegacy = (strict = false): void => {
     if (pendingDelivery === undefined || legacyCandidates.length === 0
       || pendingDelivery.managementDispatches.length !== 0) return
-    pendingDelivery = withLegacyAdmission(pendingDelivery, legacyCandidates)
-    legacyCandidates = []
+    const admitted: UserMessage[] = []
+    const unresolved: UserMessage[] = []
+    for (const candidate of legacyCandidates) {
+      const text = candidate.content[0]
+      if (text?.type === 'text' && laterLegacyTexts.has(text.text)) continue
+      if (pendingDelivery.legacyMessages.some(message => isScheduleMessageText(candidate, message.text))) {
+        admitted.push(candidate)
+      } else {
+        unresolved.push(candidate)
+      }
+    }
+    if (admitted.length > 0) pendingDelivery = withLegacyAdmission(pendingDelivery, admitted)
+    legacyCandidates = unresolved
+    if (strict && unresolved.length > 0) {
+      throw new ScheduleLogError('pending delivery has conflicting old-pin Schedule user messages')
+    }
   }
   for (const event of events.slice(seedLength)) {
     if (event.type === 'user/message') {
@@ -1084,6 +1105,7 @@ export function foldScheduleEvents(
           if (pendingDelivery.managementDispatches.length !== 0) {
             throw new ScheduleLogError('delivery-complete requires matching version-1 dispatch state')
           }
+          reconcileLegacy(true)
           pendingDelivery = undefined
           legacyCandidates = []
           break
@@ -1123,7 +1145,9 @@ export function foldScheduleEvents(
           && pendingDelivery.occurrences.some(occurrence => occurrence.scheduleId === change.id)
           && belongsToPending(legacyCandidate, pendingDelivery)) {
           const occurrenceIds = pendingDelivery.occurrences
-            .filter(occurrence => legacyCandidate.scheduleIds.has(occurrence.scheduleId))
+            .filter(occurrence => legacyCandidate.occurrences.some(candidate =>
+              candidate.scheduleId === occurrence.scheduleId
+              && candidate.occurrenceAt === occurrence.occurrenceAt))
             .map(occurrence => occurrence.occurrenceId)
           const duplicate = pendingDelivery.legacyMessages.some(message =>
             message.text === legacyCandidate.text
@@ -1138,6 +1162,8 @@ export function foldScheduleEvents(
               ]),
             })
           }
+        } else if (pendingDelivery !== undefined) {
+          laterLegacyTexts.add(legacyCandidate.text)
         }
         if (pendingDelivery !== undefined) {
           pendingDelivery = withManagementDispatches(pendingDelivery, active)
@@ -1152,6 +1178,7 @@ export function foldScheduleEvents(
       }
     }
   }
+  reconcileLegacy(true)
   return Object.freeze({
     active: Object.freeze([...active.values()]),
     seenIds: Object.freeze([...seen]),

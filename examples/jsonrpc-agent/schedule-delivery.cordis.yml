@@ -1,0 +1,8 @@
+# TypeScript SDK snapshot composition: the production example plus one
+# event-seeding fixture that exercises the SessionEventMap delivery variant.
+- id: base
+  name: '@deepseek-ai/cordis-plugin-include'
+  config:
+    path: ./cordis.yml
+- id: schedule-delivery-seed
+  name: './tests/fixtures/schedule-delivery-seed.ts'

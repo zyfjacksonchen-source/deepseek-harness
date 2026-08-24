@@ -194,6 +194,8 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+          # The Schedule downgrade gate archives the exact 2bc162 old reader.
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
         with:

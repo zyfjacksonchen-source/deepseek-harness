@@ -1,23 +1,10 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { Context } from '@deepseek-ai/cordis'
-import { createUserMessage, freezeMessage } from '@deepseek-ai/dsh-llm'
-import type { UserMessage } from '@deepseek-ai/dsh-llm'
-import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
-import type { Session } from '@deepseek-ai/dsh-session'
-import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
-import {
-  createEveryScheduleRecord,
-  createScheduleDeliveryPendingChange,
-  foldScheduleEvents,
-  renderScheduleDeliveryFraming,
-  resolveScheduleDueDecision,
-  ScheduleId,
-} from '../packages/schedule/schedule/src/domain.ts'
+import ts from 'typescript'
 
 /**
  * Real cross-build Schedule downgrade gate. The all-dispatches/no-user cut is
@@ -27,15 +14,7 @@ import {
 const OLD_COMMIT = '2bc16230975f6cf02aa1b283b1f86de44007b059'
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const driver = join(repoRoot, 'packages/schedule/schedule/tests/fixtures/downgrade-gate-driver.ts')
-
-const scenarios = [
-  { id: 'downgrade-pending-only', cut: 'pending-only', oldInitialScheduleRequests: 1, currentUpgradeScheduleRequests: 0 },
-  { id: 'downgrade-partial-dispatch-no-user', cut: 'partial-dispatch-no-user', oldInitialScheduleRequests: 1, currentUpgradeScheduleRequests: 1 },
-  { id: 'downgrade-dispatch-no-user', cut: 'dispatch-no-user', oldInitialScheduleRequests: 0, currentUpgradeScheduleRequests: 1 },
-  { id: 'downgrade-dispatch-user', cut: 'dispatch-user', oldInitialScheduleRequests: 0, currentUpgradeScheduleRequests: 0 },
-  { id: 'downgrade-user-before-dispatch', cut: 'user-before-dispatch', oldInitialScheduleRequests: 0, currentUpgradeScheduleRequests: 0 },
-  { id: 'downgrade-complete', cut: 'complete', oldInitialScheduleRequests: 0, currentUpgradeScheduleRequests: 0 },
-] as const
+const schedulePackage = join(repoRoot, 'packages/schedule/schedule')
 
 async function run(command: string, args: readonly string[], cwd = repoRoot): Promise<void> {
   await new Promise<void>((resolvePromise, reject) => {
@@ -48,7 +27,7 @@ async function run(command: string, args: readonly string[], cwd = repoRoot): Pr
   })
 }
 
-/** Run either archived or current driver without invoking pnpm dependency self-healing. */
+/** Run a transpiled driver through plain Node and public package exports. */
 async function runDriver(
   driverPath: string,
   phase: string,
@@ -56,7 +35,17 @@ async function runDriver(
   metadata: string,
   cwd = repoRoot,
 ): Promise<void> {
-  await run(process.execPath, ['--import', 'tsx', driverPath, phase, stateRoot, metadata], cwd)
+  await run(process.execPath, [driverPath, phase, stateRoot, metadata], cwd)
+}
+
+/** Build host declarations and package entries through their installed CLIs. */
+async function buildHost(cwd: string): Promise<void> {
+  await run(process.execPath, [join(cwd, 'node_modules/typescript/bin/tsc'), '-b', 'tsconfig.host.json'], cwd)
+  await run(process.execPath, [
+    join(cwd, 'node_modules/tsdown/dist/run.mjs'),
+    '--env.DSH_BUILD_FACE',
+    'host',
+  ], cwd)
 }
 
 async function capture(command: string, args: readonly string[]): Promise<string> {
@@ -77,140 +66,13 @@ function assertCleanCandidate(status: string): void {
   assert.equal(status, '', 'Schedule downgrade gate requires a clean candidate worktree')
 }
 
-function appendLegacyPrefix(
-  session: Session,
-  message: UserMessage,
-): void {
-  session.append('turn/start', { turn: 1 })
-  session.append('step/start', { turn: 1, step: 1 })
-  session.append('user/message', message, { surfaceOp: 'append' })
-}
-
-async function seedCandidate(root: string, metadataPath: string): Promise<void> {
-  const everySeconds = 3_600
-  const now = Date.now()
-  const creationNow = now - everySeconds * 1_000 - 5_000
-  const metadata = {
-    anchorAt: new Date(now - 5_000).toISOString(),
-    nextAt: new Date(now - 5_000 + everySeconds * 1_000).toISOString(),
-    everySeconds,
-    prompts: ['downgrade Every A', 'downgrade Every B'],
-    scenarios,
-    forcedScenario: {
-      id: 'downgrade-forced-old-crash',
-      prompts: ['forced downgrade Every A', 'forced downgrade Every B', 'forced downgrade Every C'],
-    },
-  }
-  const ctx = new Context()
-  try {
-    await ctx.plugin(SessionStore)
-    await ctx.plugin(JsonlSessionPersistence, { root, compression: 'none' })
-    for (const scenario of scenarios) {
-      const session = ctx.sessions.create(SessionId(scenario.id), { meta: { cwd: '/tmp' } })
-      const records = metadata.prompts.map((prompt, index) => createEveryScheduleRecord(
-        ScheduleId(`schedule-${index + 1}`), prompt, everySeconds, creationNow,
-      ))
-      for (const record of records) {
-        assert.equal(record.scheduledAt, metadata.anchorAt)
-        session.append('schedule/change', { version: 1, operation: 'create', schedule: record })
-      }
-      const decision = resolveScheduleDueDecision(records, now)
-      if (decision.kind !== 'every') throw new Error('expected a due Every decision')
-      const pending = createScheduleDeliveryPendingChange(decision, session.seq)
-      session.append('schedule/delivery', pending, { ignorable: true })
-      const dispatches = foldScheduleEvents(session.events).pendingDelivery?.managementDispatches
-      if (dispatches?.length !== records.length) throw new Error('expected every management dispatch')
-      const pendingState = foldScheduleEvents(session.events).pendingDelivery
-      assert(pendingState !== undefined)
-      const legacy = createUserMessage({
-        content: [{ type: 'text', text: renderScheduleDeliveryFraming(pendingState) }],
-        source: { kind: 'plugin', plugin: 'schedule' },
-      })
-      const deterministic = freezeMessage({
-        id: pendingState.messageId,
-        role: 'user' as const,
-        content: [{ type: 'text' as const, text: renderScheduleDeliveryFraming(pendingState) }],
-        source: { kind: 'plugin' as const, plugin: 'schedule' },
-      })
-
-      switch (scenario.cut) {
-        case 'pending-only':
-          break
-        case 'partial-dispatch-no-user': {
-          const first = dispatches[0]
-          if (first === undefined) throw new Error('expected first Every management dispatch')
-          session.append('schedule/change', first)
-          break
-        }
-        case 'dispatch-no-user':
-          for (const dispatch of dispatches) session.append('schedule/change', dispatch)
-          break
-        case 'dispatch-user':
-          for (const dispatch of dispatches) session.append('schedule/change', dispatch)
-          appendLegacyPrefix(session, legacy)
-          break
-        case 'user-before-dispatch':
-          appendLegacyPrefix(session, legacy)
-          for (const dispatch of dispatches) session.append('schedule/change', dispatch)
-          break
-        case 'complete':
-          for (const dispatch of dispatches) session.append('schedule/change', dispatch)
-          appendLegacyPrefix(session, deterministic)
-          session.append('schedule/delivery', {
-            version: 2,
-            operation: 'delivery-complete',
-            deliveryId: pending.deliveryId,
-            messageId: pending.messageId,
-          }, { ignorable: true })
-          break
-      }
-      assert.equal(await ctx.sessions.flush(session), true)
-      const seededInputs = session.events.flatMap((event) => {
-        if (event.type !== 'user/message'
-          || event.data.source.kind !== 'plugin'
-          || event.data.source.plugin !== 'schedule') return []
-        const text = event.data.content.find(block => block.type === 'text')?.text
-        return text === undefined ? [] : [{ id: event.data.id, text }]
-      })
-      process.stdout.write(
-        `candidate-seed ${scenario.cut}: admission=${scenario.cut === 'complete' ? 'ready' : 'blocked'}; pending=${pending.messageId}; inputs=${JSON.stringify(seededInputs)}\n`,
-      )
-    }
-    {
-      const scenario = metadata.forcedScenario
-      const session = ctx.sessions.create(SessionId(scenario.id), { meta: { cwd: '/tmp' } })
-      const records = scenario.prompts.map((prompt, index) => createEveryScheduleRecord(
-        ScheduleId(`schedule-${index + 1}`), prompt, everySeconds, creationNow,
-      ))
-      for (const record of records) {
-        assert.equal(record.scheduledAt, metadata.anchorAt)
-        session.append('schedule/change', { version: 1, operation: 'create', schedule: record })
-      }
-      const decision = resolveScheduleDueDecision(records, now)
-      if (decision.kind !== 'every') throw new Error('expected a due forced Every decision')
-      const pending = createScheduleDeliveryPendingChange(decision, session.seq)
-      session.append('schedule/delivery', pending, { ignorable: true })
-      const dispatches = foldScheduleEvents(session.events).pendingDelivery?.managementDispatches
-      if (dispatches?.length !== records.length) throw new Error('expected forced Every management dispatches')
-      const first = dispatches[0]
-      if (first === undefined) throw new Error('expected first forced Every management dispatch')
-      session.append('schedule/change', first)
-      assert.equal(await ctx.sessions.flush(session), true)
-      const projected = foldScheduleEvents(session.events)
-      assert(projected.pendingDelivery !== undefined)
-      process.stdout.write(
-        `candidate-seed forced-old-crash: admission=blocked; pending=${pending.messageId}; mirror=A only\n`,
-      )
-    }
-    await writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, 'utf8')
-  } finally {
-    await ctx.fiber.dispose()
-  }
-}
-
 async function main(): Promise<void> {
-  const candidateStatus = await capture('git', ['status', '--porcelain'])
-  assertCleanCandidate(candidateStatus)
+  const args = process.argv.slice(2)
+  assert(args.length === 0 || (args.length === 1 && args[0] === '--candidate-built'),
+    'usage: verify-schedule-downgrade.ts [--candidate-built]')
+  assertCleanCandidate(await capture('git', ['status', '--porcelain']))
+  if (args.length === 0) await buildHost(repoRoot)
+  assertCleanCandidate(await capture('git', ['status', '--porcelain']))
   const scratch = await mkdtemp(join(tmpdir(), 'dsh-schedule-downgrade-'))
   let complete = false
   try {
@@ -218,6 +80,8 @@ async function main(): Promise<void> {
     const oldRoot = join(scratch, 'old-source')
     const archive = join(scratch, 'old-source.tar')
     const metadata = join(scratch, 'gate.json')
+    const candidateRuntime = join(scratch, 'candidate-package')
+    const candidateDriver = join(candidateRuntime, 'downgrade-gate-driver.mjs')
     const [candidateCommit, candidateTree, oldCommit, oldTree, pnpmVersion] = await Promise.all([
       capture('git', ['rev-parse', 'HEAD']),
       capture('git', ['rev-parse', 'HEAD^{tree}']),
@@ -237,23 +101,36 @@ async function main(): Promise<void> {
     ].join('\n'))
 
     await mkdir(oldRoot)
-    await seedCandidate(stateRoot, metadata)
     await run('git', ['archive', '--format=tar', '--output', archive, oldCommit])
     await run('tar', ['-xf', archive, '-C', oldRoot])
     await run('pnpm', [
       'install', '--offline', '--frozen-lockfile', '--ignore-scripts', '--prefer-offline', '--dir', oldRoot,
     ])
-    const oldDriver = join(oldRoot, 'packages/schedule/schedule/tests/fixtures/downgrade-gate-driver.ts')
-    await mkdir(dirname(oldDriver), { recursive: true })
-    await copyFile(driver, oldDriver)
+    await buildHost(oldRoot)
 
+    const compiled = ts.transpileModule(await readFile(driver, 'utf8'), {
+      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2024 },
+      fileName: driver,
+      reportDiagnostics: true,
+    })
+    assert.equal(compiled.diagnostics?.length ?? 0, 0, 'Schedule downgrade driver must transpile cleanly')
+    await mkdir(candidateRuntime)
+    await copyFile(join(schedulePackage, 'package.json'), join(candidateRuntime, 'package.json'))
+    await symlink(join(schedulePackage, 'lib'), join(candidateRuntime, 'lib'), 'dir')
+    await symlink(join(schedulePackage, 'node_modules'), join(candidateRuntime, 'node_modules'), 'dir')
+    await writeFile(candidateDriver, compiled.outputText, 'utf8')
+    const oldDriver = join(oldRoot, 'packages/schedule/schedule/downgrade-gate-driver.mjs')
+    await copyFile(candidateDriver, oldDriver)
+
+    await runDriver(candidateDriver, 'candidate-seed', stateRoot, metadata, candidateRuntime)
     await runDriver(oldDriver, 'old-initial', stateRoot, metadata, oldRoot)
-    await runDriver(driver, 'current-upgrade', stateRoot, metadata)
+    await runDriver(candidateDriver, 'current-upgrade', stateRoot, metadata, candidateRuntime)
     await runDriver(oldDriver, 'old-final', stateRoot, metadata, oldRoot)
     await runDriver(oldDriver, 'forced-old-crash', stateRoot, metadata, oldRoot)
     await runDriver(oldDriver, 'forced-old-recover', stateRoot, metadata, oldRoot)
-    await runDriver(driver, 'forced-current-upgrade', stateRoot, metadata)
+    await runDriver(candidateDriver, 'forced-current-upgrade', stateRoot, metadata, candidateRuntime)
     await runDriver(oldDriver, 'forced-old-final', stateRoot, metadata, oldRoot)
+    assertCleanCandidate(await capture('git', ['status', '--porcelain']))
     complete = true
     process.stdout.write(
       'Schedule rollback gate passed: admission-ready old-pin loads stayed exact; policy-bypass pending probes validated containment only; forced old→old crash produced NEGATIVE evidence and remains an expected blocker.\n',

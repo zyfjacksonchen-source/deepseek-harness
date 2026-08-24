@@ -103,6 +103,12 @@ describe('CI workflow', () => {
       expect(job['runs-on'], `${jobName} runs-on must not use the Windows failover switch`).not.toContain('DSH_CI_FAILOVER_WINDOWS')
       expect(job['runs-on']).toContain('vm-backup')
     }
+    if (!Array.isArray(node24Consumers.steps)) throw new TypeError('node-24-consumers must define steps')
+    const consumerCheckout = (node24Consumers.steps as unknown[]).find(step => isRecord(step)
+      && typeof step.uses === 'string' && step.uses.startsWith('actions/checkout@'))
+    expect(consumerCheckout).toMatchObject({
+      with: { 'persist-credentials': false, 'fetch-depth': 0 },
+    })
     expect(aggregate['runs-on']).toContain('DSH_CI_FAILOVER_LINUX')
     expect(aggregate['runs-on']).not.toContain('DSH_CI_FAILOVER_WINDOWS')
     expect(aggregate['runs-on']).toContain('vm-backup')

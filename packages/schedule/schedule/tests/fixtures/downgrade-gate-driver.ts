@@ -1,19 +1,18 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { setImmediate as settleImmediate } from 'node:timers/promises'
 import { Context } from '@deepseek-ai/cordis'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { CallId, createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
+import { CallId, createUserMessage, freezeMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { SessionId } from '@deepseek-ai/dsh-session'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
-import * as toolSchedule from '../../src/index.ts'
-import { foldScheduleEvents } from '../../src/domain.ts'
+import * as toolSchedule from '@deepseek-ai/dsh-schedule'
 
-type Phase = 'old-initial' | 'current-upgrade' | 'old-final'
+type Phase = 'candidate-seed' | 'old-initial' | 'current-upgrade' | 'old-final'
   | 'forced-old-crash' | 'forced-old-recover' | 'forced-current-upgrade' | 'forced-old-final'
 
 interface Scenario {
@@ -34,6 +33,13 @@ interface GateMetadata {
     readonly id: string
     readonly prompts: readonly string[]
   }
+  readonly policyBypassScenario: {
+    readonly id: string
+    readonly prompts: readonly string[]
+    readonly originalAt: string
+    readonly bypassAt: string
+    readonly finalAt: string
+  }
 }
 
 interface CompatFold {
@@ -45,8 +51,183 @@ interface CompatFold {
     readonly scheduledAt: string
   }>
   readonly pendingDelivery?: {
+    readonly deliveryId: string
+    readonly messageId: string
     readonly admitted: boolean
     readonly admittedOccurrenceIds?: readonly string[]
+    readonly managementDispatches: readonly unknown[]
+  }
+}
+
+const scenarios = [
+  { id: 'downgrade-pending-only', cut: 'pending-only', oldInitialScheduleRequests: 1, currentUpgradeScheduleRequests: 0 },
+  { id: 'downgrade-partial-dispatch-no-user', cut: 'partial-dispatch-no-user', oldInitialScheduleRequests: 1, currentUpgradeScheduleRequests: 1 },
+  { id: 'downgrade-dispatch-no-user', cut: 'dispatch-no-user', oldInitialScheduleRequests: 0, currentUpgradeScheduleRequests: 1 },
+  { id: 'downgrade-dispatch-user', cut: 'dispatch-user', oldInitialScheduleRequests: 0, currentUpgradeScheduleRequests: 0 },
+  { id: 'downgrade-user-before-dispatch', cut: 'user-before-dispatch', oldInitialScheduleRequests: 0, currentUpgradeScheduleRequests: 0 },
+  { id: 'downgrade-complete', cut: 'complete', oldInitialScheduleRequests: 0, currentUpgradeScheduleRequests: 0 },
+] as const satisfies readonly Scenario[]
+
+function appendLegacyPrefix(session: Session, message: ReturnType<typeof createUserMessage>): void {
+  session.append('turn/start', { turn: 1 })
+  session.append('step/start', { turn: 1, step: 1 })
+  session.append('user/message', message, { surfaceOp: 'append' })
+}
+
+async function seedCandidate(root: string, metadataPath: string): Promise<void> {
+  const everySeconds = 3_600
+  const now = Date.now()
+  const creationNow = now - everySeconds * 1_000 - 5_000
+  const metadata: GateMetadata = {
+    anchorAt: new Date(now - 5_000).toISOString(),
+    nextAt: new Date(now - 5_000 + everySeconds * 1_000).toISOString(),
+    everySeconds,
+    prompts: ['downgrade Every A', 'downgrade Every B'],
+    scenarios,
+    forcedScenario: {
+      id: 'downgrade-forced-old-crash',
+      prompts: ['forced downgrade Every A', 'forced downgrade Every B', 'forced downgrade Every C'],
+    },
+    policyBypassScenario: {
+      id: 'downgrade-policy-bypass-next-occurrence',
+      prompts: ['policy bypass Every A', 'policy bypass Every B'],
+      originalAt: new Date(now - everySeconds * 2_000 - 5_000).toISOString(),
+      bypassAt: new Date(now - 5_000).toISOString(),
+      finalAt: new Date(now + everySeconds * 1_000 - 5_000).toISOString(),
+    },
+  }
+  const ctx = new Context()
+  try {
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(JsonlSessionPersistence, { root, compression: 'none' })
+    for (const scenario of scenarios) {
+      const session = ctx.sessions.create(SessionId(scenario.id), { meta: { cwd: '/tmp' } })
+      const records = metadata.prompts.map((prompt, index) => toolSchedule.createEveryScheduleRecord(
+        toolSchedule.ScheduleId(`schedule-${index + 1}`), prompt, everySeconds, creationNow,
+      ))
+      for (const record of records) {
+        assert.equal(record.scheduledAt, metadata.anchorAt)
+        session.append('schedule/change', { version: 1, operation: 'create', schedule: record })
+      }
+      const decision = toolSchedule.resolveScheduleDueDecision(records, now)
+      if (decision.kind !== 'every') throw new Error('expected a due Every decision')
+      const pending = toolSchedule.createScheduleDeliveryPendingChange(decision, session.seq)
+      session.append('schedule/delivery', pending, { ignorable: true })
+      const dispatches = folded(session.events).pendingDelivery?.managementDispatches
+      if (dispatches?.length !== records.length) throw new Error('expected every management dispatch')
+      const pendingState = folded(session.events).pendingDelivery
+      assert(pendingState !== undefined)
+      const legacy = createUserMessage({
+        content: [{ type: 'text', text: toolSchedule.renderScheduleDeliveryFraming(pendingState as never) }],
+        source: { kind: 'plugin', plugin: 'schedule' },
+      })
+      const deterministic = freezeMessage({
+        id: pendingState.messageId as never,
+        role: 'user' as const,
+        content: [{
+          type: 'text' as const,
+          text: toolSchedule.renderScheduleDeliveryFraming(pendingState as never),
+        }],
+        source: { kind: 'plugin' as const, plugin: 'schedule' },
+      })
+
+      switch (scenario.cut) {
+        case 'pending-only':
+          break
+        case 'partial-dispatch-no-user': {
+          const first = dispatches[0]
+          if (first === undefined) throw new Error('expected first Every management dispatch')
+          session.append('schedule/change', first as never)
+          break
+        }
+        case 'dispatch-no-user':
+          for (const dispatch of dispatches) session.append('schedule/change', dispatch as never)
+          break
+        case 'dispatch-user':
+          for (const dispatch of dispatches) session.append('schedule/change', dispatch as never)
+          appendLegacyPrefix(session, legacy)
+          break
+        case 'user-before-dispatch':
+          appendLegacyPrefix(session, legacy)
+          for (const dispatch of dispatches) session.append('schedule/change', dispatch as never)
+          break
+        case 'complete':
+          for (const dispatch of dispatches) session.append('schedule/change', dispatch as never)
+          appendLegacyPrefix(session, deterministic)
+          session.append('schedule/delivery', {
+            version: 2,
+            operation: 'delivery-complete',
+            deliveryId: pending.deliveryId,
+            messageId: pending.messageId,
+          }, { ignorable: true })
+          break
+      }
+      assert.equal(await ctx.sessions.flush(session), true)
+      const seededInputs = durableScheduleInputs(session.events)
+      process.stdout.write(
+        `candidate-seed ${scenario.cut}: admission=${scenario.cut === 'complete' ? 'ready' : 'blocked'}; pending=${pending.messageId}; inputs=${JSON.stringify(seededInputs)}\n`,
+      )
+    }
+    {
+      const scenario = metadata.forcedScenario
+      const session = ctx.sessions.create(SessionId(scenario.id), { meta: { cwd: '/tmp' } })
+      const records = scenario.prompts.map((prompt, index) => toolSchedule.createEveryScheduleRecord(
+        toolSchedule.ScheduleId(`schedule-${index + 1}`), prompt, everySeconds, creationNow,
+      ))
+      for (const record of records) {
+        assert.equal(record.scheduledAt, metadata.anchorAt)
+        session.append('schedule/change', { version: 1, operation: 'create', schedule: record })
+      }
+      const decision = toolSchedule.resolveScheduleDueDecision(records, now)
+      if (decision.kind !== 'every') throw new Error('expected a due forced Every decision')
+      const pending = toolSchedule.createScheduleDeliveryPendingChange(decision, session.seq)
+      session.append('schedule/delivery', pending, { ignorable: true })
+      const dispatches = folded(session.events).pendingDelivery?.managementDispatches
+      if (dispatches?.length !== records.length) throw new Error('expected forced Every management dispatches')
+      const first = dispatches[0]
+      if (first === undefined) throw new Error('expected first forced Every management dispatch')
+      session.append('schedule/change', first as never)
+      assert.equal(await ctx.sessions.flush(session), true)
+      assert(folded(session.events).pendingDelivery !== undefined)
+      process.stdout.write(
+        `candidate-seed forced-old-crash: admission=blocked; pending=${pending.messageId}; mirror=A only\n`,
+      )
+    }
+    {
+      const scenario = metadata.policyBypassScenario
+      const originalAt = Date.parse(scenario.originalAt)
+      const session = ctx.sessions.create(SessionId(scenario.id), { meta: { cwd: '/tmp' } })
+      const records = scenario.prompts.map((prompt, index) => toolSchedule.createEveryScheduleRecord(
+        toolSchedule.ScheduleId(`schedule-${index + 1}`),
+        prompt,
+        everySeconds,
+        originalAt - everySeconds * 1_000,
+      ))
+      for (const record of records) {
+        assert.equal(record.scheduledAt, scenario.originalAt)
+        session.append('schedule/change', { version: 1, operation: 'create', schedule: record })
+      }
+      const decision = toolSchedule.resolveScheduleDueDecision(records, originalAt)
+      if (decision.kind !== 'every') throw new Error('expected policy-bypass Every decision')
+      const pending = toolSchedule.createScheduleDeliveryPendingChange(decision, session.seq)
+      session.append('schedule/delivery', pending, { ignorable: true })
+      const dispatches = folded(session.events).pendingDelivery?.managementDispatches
+      if (dispatches?.length !== records.length) throw new Error('expected policy-bypass dispatch mirrors')
+      for (const dispatch of dispatches) session.append('schedule/change', dispatch as never)
+      assert.equal(await ctx.sessions.flush(session), true)
+      assertEveryRecords(
+        folded(session.events),
+        metadata,
+        scenario.prompts,
+        scenario.prompts.map(() => new Date(originalAt + everySeconds * 1_000).toISOString()),
+      )
+      process.stdout.write(
+        `candidate-seed policy-bypass: admission=blocked; pending=${pending.messageId}; mirrors=complete\n`,
+      )
+    }
+    await writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, 'utf8')
+  } finally {
+    await ctx.fiber.dispose()
   }
 }
 
@@ -119,7 +300,7 @@ function durableScheduleInputs(events: readonly SessionEvent[]): Array<{
 }
 
 function folded(events: readonly SessionEvent[], seedLength = 0): CompatFold {
-  return foldScheduleEvents(events, seedLength) as unknown as CompatFold
+  return toolSchedule.foldScheduleEvents(events, seedLength) as unknown as CompatFold
 }
 
 function assertEveryRecords(
@@ -319,6 +500,127 @@ async function runScenario(
   )
 }
 
+async function runPolicyBypassOld(
+  ctx: Context,
+  adapter: RecordingAdapter,
+  metadata: GateMetadata,
+): Promise<void> {
+  const scenario = metadata.policyBypassScenario
+  const sessionId = SessionId(scenario.id)
+  const before = await ctx.sessionPersistence.inspect(sessionId)
+  assertEveryRecords(
+    folded(before.events, before.meta.seedLength ?? 0),
+    metadata,
+    scenario.prompts,
+    scenario.prompts.map(() => new Date(
+      Date.parse(scenario.originalAt) + metadata.everySeconds * 1_000,
+    ).toISOString()),
+  )
+  const dispatch = waitForSessionEvent(ctx, sessionId, event => eventType(event) === 'schedule/change'
+    && (event as unknown as { data: { operation?: string } }).data.operation === 'dispatch')
+  const requestStart = adapter.requests.length
+  const handle = await ctx.agents.resume({
+    resumeSessionId: sessionId,
+    agentOptions: { provider: 'mock', model: 'mock' },
+  })
+  await dispatch
+  await handle.agent.whenIdle()
+  await settleImmediate()
+  const texts = scheduleRequestTexts(adapter.requests.slice(requestStart))
+  assert.equal(texts.length, 1)
+  assert.deepEqual(promptCounts(texts, scenario.prompts), [1, 1])
+  assert(texts[0]?.includes(scenario.bypassAt))
+  assert.equal(await ctx.sessions.flush(handle.agent.session), true)
+  const stored = await ctx.sessionPersistence.inspect(sessionId)
+  assertEveryRecords(
+    folded(stored.events, stored.meta.seedLength ?? 0),
+    metadata,
+    scenario.prompts,
+    scenario.prompts.map(() => scenario.finalAt),
+  )
+  assert.equal(durableScheduleInputs(stored.events).length, 1)
+  await handle.dispose()
+  process.stdout.write(
+    'POLICY-BYPASS next-occurrence old interval: later user/message precedes its v1 dispatches; occurrences A=1,B=1.\n',
+  )
+}
+
+async function runPolicyBypassCurrent(
+  ctx: Context,
+  adapter: RecordingAdapter,
+  metadata: GateMetadata,
+): Promise<void> {
+  const scenario = metadata.policyBypassScenario
+  const sessionId = SessionId(scenario.id)
+  const before = await ctx.sessionPersistence.inspect(sessionId)
+  const projected = folded(before.events, before.meta.seedLength ?? 0)
+  assert.equal(projected.pendingDelivery?.admitted, false)
+  assertEveryRecords(
+    projected,
+    metadata,
+    scenario.prompts,
+    scenario.prompts.map(() => scenario.finalAt),
+  )
+  const completion = waitForSessionEvent(ctx, sessionId, event => eventType(event) === 'schedule/delivery'
+    && (event as unknown as { data: { operation?: string } }).data.operation === 'delivery-complete')
+  const requestStart = adapter.requests.length
+  const handle = await ctx.agents.resume({
+    resumeSessionId: sessionId,
+    agentOptions: { provider: 'mock', model: 'mock' },
+  })
+  await completion
+  await handle.agent.whenIdle()
+  await settleImmediate()
+  const texts = scheduleRequestTexts(adapter.requests.slice(requestStart))
+  assert.equal(texts.length, 1)
+  assert.deepEqual(promptCounts(texts, scenario.prompts), [1, 1])
+  assert(texts[0]?.includes(scenario.originalAt))
+  assert.equal(await ctx.sessions.flush(handle.agent.session), true)
+  const stored = await ctx.sessionPersistence.inspect(sessionId)
+  assert.equal(folded(stored.events, stored.meta.seedLength ?? 0).pendingDelivery, undefined)
+  assertEveryRecords(
+    folded(stored.events, stored.meta.seedLength ?? 0),
+    metadata,
+    scenario.prompts,
+    scenario.prompts.map(() => scenario.finalAt),
+  )
+  const inputs = durableScheduleInputs(stored.events)
+  assert.equal(inputs.length, 2)
+  assert.deepEqual(promptCounts(inputs.map(input => input.text), scenario.prompts), [2, 2])
+  assert.deepEqual(inputs.map(input => [
+    input.text.includes(scenario.originalAt),
+    input.text.includes(scenario.bypassAt),
+  ]), [[false, true], [true, false]])
+  await handle.dispose()
+  process.stdout.write(
+    'policy-bypass current containment: original and later occurrence each have one durable carrier; no fold fault or replay duplicate.\n',
+  )
+}
+
+async function runPolicyBypassOldFinal(
+  ctx: Context,
+  adapter: RecordingAdapter,
+  metadata: GateMetadata,
+): Promise<void> {
+  const scenario = metadata.policyBypassScenario
+  const requestStart = adapter.requests.length
+  const handle = await ctx.agents.resume({
+    resumeSessionId: SessionId(scenario.id),
+    agentOptions: { provider: 'mock', model: 'mock' },
+  })
+  await handle.agent.whenIdle()
+  await settleImmediate()
+  assert.equal(scheduleRequests(adapter.requests.slice(requestStart)), 0)
+  assertEveryRecords(
+    folded(handle.agent.session.events, handle.agent.session.header.seedLength ?? 0),
+    metadata,
+    scenario.prompts,
+    scenario.prompts.map(() => scenario.finalAt),
+  )
+  await handle.dispose()
+  process.stdout.write('policy-bypass old-final: admission-ready state loads with no further Schedule request.\n')
+}
+
 async function runForcedOldCrash(
   ctx: Context,
   adapter: RecordingAdapter,
@@ -477,10 +779,17 @@ async function main(): Promise<void> {
   const phase = process.argv[2] as Phase | undefined
   const root = process.argv[3]
   const metadataPath = process.argv[4]
-  assert(phase === 'old-initial' || phase === 'current-upgrade' || phase === 'old-final'
+  assert(phase === 'candidate-seed' || phase === 'old-initial' || phase === 'current-upgrade' || phase === 'old-final'
     || phase === 'forced-old-crash' || phase === 'forced-old-recover'
     || phase === 'forced-current-upgrade' || phase === 'forced-old-final')
   assert(root !== undefined && metadataPath !== undefined)
+  const scheduleEntry = import.meta.resolve('@deepseek-ai/dsh-schedule')
+  assert.match(scheduleEntry, /\/lib\/index\.js$/, 'Schedule driver must resolve the public built package entry')
+  process.stdout.write(`${phase} Schedule entry: ${scheduleEntry}\n`)
+  if (phase === 'candidate-seed') {
+    await seedCandidate(root, metadataPath)
+    return
+  }
   const metadata = JSON.parse(await readFile(metadataPath, 'utf8')) as GateMetadata
   const ctx = new Context()
   try {
@@ -498,6 +807,9 @@ async function main(): Promise<void> {
       for (const scenario of metadata.scenarios) {
         await runScenario(ctx, adapter, metadata, scenario, phase)
       }
+      if (phase === 'old-initial') await runPolicyBypassOld(ctx, adapter, metadata)
+      else if (phase === 'current-upgrade') await runPolicyBypassCurrent(ctx, adapter, metadata)
+      else await runPolicyBypassOldFinal(ctx, adapter, metadata)
     }
   } finally {
     await ctx.fiber.dispose()

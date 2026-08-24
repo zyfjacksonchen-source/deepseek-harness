@@ -280,6 +280,63 @@ describe('Schedule delivery downgrade reconciliation', () => {
     expect(renderScheduleDeliveryFraming(reconciled!)).not.toContain('"schedule_id":"every-c"')
   })
 
+  it('keeps a later old-pin occurrence outside an already mirrored pending delivery', () => {
+    const create = {
+      version: 1,
+      operation: 'create',
+      schedule: {
+        id: 'every-a',
+        kind: 'every',
+        prompt: 'A',
+        everySeconds: 300,
+        scheduledAt: '2026-08-05T12:05:00.000Z',
+      },
+    } as const
+    const decoded = decodeScheduleChange(create)
+    if (decoded.operation !== 'create' || decoded.schedule.kind !== 'every') {
+      throw new Error('expected Every Schedule create')
+    }
+    const original = resolveScheduleDueDecision(
+      [decoded.schedule],
+      Date.parse('2026-08-05T12:07:00.000Z'),
+    )
+    const later = resolveScheduleDueDecision(
+      [{ ...decoded.schedule, scheduledAt: '2026-08-05T12:10:00.000Z' }],
+      Date.parse('2026-08-05T12:11:00.000Z'),
+    )
+    if (original.kind !== 'every' || later.kind !== 'every') throw new Error('expected Every decisions')
+    const change = createScheduleDeliveryPendingChange(original, 1)
+    const laterMessage = createUserMessage({
+      content: [{ type: 'text', text: renderEveryReminderBatchFraming(later.reminders) }],
+      source: { kind: 'plugin', plugin: 'schedule' },
+    })
+    const prefix = [
+      management(create, 0),
+      delivery(change, 1),
+      management({
+        version: 1,
+        operation: 'dispatch',
+        id: 'every-a',
+        acceptedAt: '2026-08-05T12:07:00.000Z',
+      }, 2),
+      { type: 'user/message', seq: 3, time: 1, data: laterMessage, surfaceOp: 'append' } as SessionEvent,
+    ]
+    expect(() => foldScheduleEvents(prefix)).toThrow(/conflicting old-pin/)
+
+    const reconciled = foldScheduleEvents([
+      ...prefix,
+      management({
+        version: 1,
+        operation: 'dispatch',
+        id: 'every-a',
+        acceptedAt: '2026-08-05T12:11:00.000Z',
+      }, 4),
+    ]).pendingDelivery
+
+    expect(reconciled).toMatchObject({ admitted: false, admittedOccurrenceIds: [] })
+    expect(renderScheduleDeliveryFraming(reconciled!)).toContain('"occurrence_at":"2026-08-05T12:05:00.000Z"')
+  })
+
   it('keeps a reserved occurrence after delete while deduplicating the old remainder', () => {
     const creates = [
       {
