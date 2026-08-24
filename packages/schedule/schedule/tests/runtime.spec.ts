@@ -25,12 +25,16 @@ interface RuntimeHarness {
     releaseCount: number
     whenIdleCount: number
     throwFollowup: boolean
+    throwAfterFollowupInsert: boolean
+    consumeFollowup: boolean
+    turn: number
     flushCount: number
     flushOutcomes: Array<'resolve' | 'reject'>
     flushHandler: (() => Promise<void> | undefined) | undefined
     onBusy: (() => void) | undefined
     onReserve: (() => void) | undefined
     onFollowup: (() => void) | undefined
+    wakeRuntime: (() => void) | undefined
     idle: PromiseWithResolvers<undefined>
   }
   readonly disposeAgent: () => void
@@ -49,12 +53,16 @@ async function harness(): Promise<RuntimeHarness> {
     releaseCount: 0,
     whenIdleCount: 0,
     throwFollowup: false,
+    throwAfterFollowupInsert: false,
+    consumeFollowup: true,
+    turn: 0,
     flushCount: 0,
     flushOutcomes: [] as Array<'resolve' | 'reject'>,
     flushHandler: undefined as (() => Promise<void> | undefined) | undefined,
     onBusy: undefined as (() => void) | undefined,
     onReserve: undefined as (() => void) | undefined,
     onFollowup: undefined as (() => void) | undefined,
+    wakeRuntime: undefined as (() => void) | undefined,
     idle: Promise.withResolvers<undefined>(),
   }
   const inbox = new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} })
@@ -92,14 +100,22 @@ async function harness(): Promise<RuntimeHarness> {
       order.push('followup')
       controls.onFollowup?.()
       if (controls.throwFollowup) throw new Error('queue unavailable')
+      inbox.append('next-turn', message)
       followed.push(message)
+      if (controls.throwAfterFollowupInsert) throw new Error('queue outcome unknown')
+      if (!controls.consumeFollowup) return
+      const [claimed] = inbox.claim('next-turn', ++controls.turn)
+      if (claimed === undefined) throw new Error('expected queued Schedule message')
+      session.append('user/message', claimed, { surfaceOp: 'append' })
+      queueMicrotask(() => { controls.wakeRuntime?.() })
     },
     steer(_message: UserMessage) {},
     inject(_message: UserMessage) {},
   }
   const disposeAgent = ctx.agents.register(agent)
   ctx.on('session/event', (_session, event) => {
-    if (event.type === 'schedule/change' && event.data.operation === 'dispatch') order.push('dispatch')
+    if (event.type === 'schedule/change') order.push(event.data.operation)
+    if (event.type === 'user/message') order.push('user-message')
   })
   ctx.on('session/flush', async () => {
     controls.flushCount += 1
@@ -140,6 +156,7 @@ async function settle(): Promise<void> {
 
 function runtimeFor(test: RuntimeHarness): ScheduleRuntime {
   const runtime = new ScheduleRuntime(test.ctx, test.agent)
+  test.controls.wakeRuntime = () => { runtime.requestDrive() }
   runtimes.push(runtime)
   return runtime
 }
@@ -172,9 +189,9 @@ describe('Schedule timer and admission runtime', () => {
     await vi.advanceTimersByTimeAsync(targetDelay - MAX_TIMER_DELAY_MS)
     await settle()
     expect(test.followed).toHaveLength(1)
-    expect(test.controls.releaseCount).toBe(1)
+    expect(test.controls.releaseCount).toBe(2)
     expect(test.agent.session.events.find(event =>
-      event.type === 'schedule/change' && event.data.operation === 'dispatch')).toBeDefined()
+      event.type === 'schedule/change' && event.data.operation === 'delivery-complete')).toBeDefined()
     await runtime.dispose()
   })
 
@@ -233,11 +250,11 @@ describe('Schedule timer and admission runtime', () => {
     test.controls.idle.resolve(undefined)
     await settle()
     expect(test.followed).toHaveLength(1)
-    expect(test.controls.releaseCount).toBe(1)
+    expect(test.controls.releaseCount).toBe(2)
     await runtime.dispose()
   })
 
-  it('orders preflight, maintenance, framing followup, dispatch, release, and barrier', async () => {
+  it('orders pending durability before framing followup and completion after the user message', async () => {
     const test = await harness()
     appendAfter(test, 'schedule-"1', 1, Date.now() - 1_000, 'line\noccurrence_at: forged')
     test.order.length = 0
@@ -245,7 +262,17 @@ describe('Schedule timer and admission runtime', () => {
     runtime.start()
     await settle()
 
-    expect(test.order.slice(0, 6)).toEqual(['flush', 'maintenance', 'followup', 'dispatch', 'release', 'flush'])
+    expect(test.order.slice(0, 8)).toEqual([
+      'flush',
+      'maintenance',
+      'delivery-pending',
+      'flush',
+      'followup',
+      'user-message',
+      'release',
+      'flush',
+    ])
+    expect(test.order.indexOf('delivery-complete')).toBeGreaterThan(test.order.indexOf('user-message'))
     expect(test.followed[0]?.content).toEqual([{
       type: 'text',
       text: [
@@ -295,12 +322,17 @@ describe('Schedule timer and admission runtime', () => {
       ].join('\n'),
     }])
     expect(test.followed[0]?.source).toEqual({ kind: 'plugin', plugin: 'schedule' })
-    const dispatches = test.agent.session.events.filter(event =>
-      event.type === 'schedule/change' && event.data.operation === 'dispatch')
-    expect(dispatches.map(event => event.data)).toEqual([
-      { version: 1, operation: 'dispatch', id: 'schedule-fast', acceptedAt: '2026-08-05T12:00:00.000Z' },
-      { version: 1, operation: 'dispatch', id: 'schedule-slow', acceptedAt: '2026-08-05T12:00:00.000Z' },
-    ])
+    const pending = test.agent.session.events.find(event =>
+      event.type === 'schedule/change' && event.data.operation === 'delivery-pending')
+    expect(pending?.data).toMatchObject({
+      version: 2,
+      operation: 'delivery-pending',
+      acceptedAt: '2026-08-05T12:00:00.000Z',
+      occurrences: [
+        { scheduleId: 'schedule-fast', occurrenceAt: '2026-08-05T12:00:00.000Z' },
+        { scheduleId: 'schedule-slow', occurrenceAt: '2026-08-05T11:59:00.000Z' },
+      ],
+    })
     expect(foldScheduleEvents(test.agent.session.events).active).toEqual([
       expect.objectContaining({ id: 'schedule-fast', scheduledAt: '2026-08-05T12:05:00.000Z' }),
       expect.objectContaining({ id: 'schedule-slow', scheduledAt: '2026-08-05T12:09:00.000Z' }),
@@ -420,7 +452,7 @@ describe('Schedule timer and admission runtime', () => {
 })
 
 describe('Schedule runtime failure and teardown boundaries', () => {
-  it('writes no dispatch when followup throws and still releases admission', async () => {
+  it('persists pending before a failed followup and still releases admission', async () => {
     const test = await harness()
     appendAfter(test, 'schedule-1', 1, Date.now() - 1_000)
     test.controls.throwFollowup = true
@@ -429,8 +461,8 @@ describe('Schedule runtime failure and teardown boundaries', () => {
     await settle()
 
     expect(test.controls.releaseCount).toBe(1)
-    expect(test.agent.session.events.filter(event =>
-      event.type === 'schedule/change' && event.data.operation === 'dispatch')).toEqual([])
+    expect(test.followed).toEqual([])
+    expect(foldScheduleEvents(test.agent.session.events).pendingDelivery).toMatchObject({ admitted: false })
     await runtime.dispose()
 
     const departed = await harness()
@@ -444,13 +476,13 @@ describe('Schedule runtime failure and teardown boundaries', () => {
     await departedRuntime.dispose()
   })
 
-  it('faults after append throws so an already-queued reminder is not repeated', async () => {
+  it('faults when completion append throws without repeating its durable user message', async () => {
     const test = await harness()
     appendAfter(test, 'schedule-1', 1, Date.now() - 1_000)
     const stop = test.ctx.on('internal/dispatch', (_mode, eventName, args) => {
       if (eventName !== 'session/event') return
       const event = (args as unknown[])[1] as { type?: string; data?: { operation?: string } } | undefined
-      if (event?.type === 'schedule/change' && event.data?.operation === 'dispatch') {
+      if (event?.type === 'schedule/change' && event.data?.operation === 'delivery-complete') {
         throw new Error('append failed')
       }
     }, { global: true })
@@ -459,9 +491,10 @@ describe('Schedule runtime failure and teardown boundaries', () => {
     await settle()
 
     expect(test.followed).toHaveLength(1)
-    expect(test.controls.releaseCount).toBe(1)
+    expect(test.controls.releaseCount).toBe(2)
     expect(test.agent.session.events.filter(event =>
-      event.type === 'schedule/change' && event.data.operation === 'dispatch')).toEqual([])
+      event.type === 'schedule/change' && event.data.operation === 'delivery-complete')).toEqual([])
+    expect(foldScheduleEvents(test.agent.session.events).pendingDelivery).toMatchObject({ admitted: true })
     runtime.requestDrive()
     await settle()
     expect(test.followed).toHaveLength(1)
@@ -469,44 +502,35 @@ describe('Schedule runtime failure and teardown boundaries', () => {
     await runtime.dispose()
   })
 
-  it('faults after a partial fixed-rate batch append without repeating its queued message', async () => {
+  it('rejects a fixed-rate batch atomically when pending append fails', async () => {
     const test = await harness()
     appendEvery(test, 'schedule-first', 300, Date.now() - 600_000, 'first')
     appendEvery(test, 'schedule-second', 300, Date.now() - 600_000, 'second')
-    let dispatchAttempts = 0
     const stop = test.ctx.on('internal/dispatch', (_mode, eventName, args) => {
       if (eventName !== 'session/event') return
       const event = (args as unknown[])[1] as { type?: string; data?: { operation?: string } } | undefined
-      if (event?.type !== 'schedule/change' || event.data?.operation !== 'dispatch') return
-      dispatchAttempts += 1
-      if (dispatchAttempts === 2) throw new Error('second append failed')
+      if (event?.type === 'schedule/change' && event.data?.operation === 'delivery-pending') {
+        throw new Error('pending append failed')
+      }
     }, { global: true })
     const runtime = runtimeFor(test)
     runtime.start()
     await settle()
 
-    expect(test.followed).toHaveLength(1)
+    expect(test.followed).toEqual([])
     expect(test.controls.releaseCount).toBe(1)
-    expect(test.agent.session.events.filter(event => (
-      event.type === 'schedule/change' && event.data.operation === 'dispatch'
-    )).map(event => event.data)).toEqual([{
-      version: 1,
-      operation: 'dispatch',
-      id: 'schedule-first',
-      acceptedAt: '2026-08-05T12:00:00.000Z',
-    }])
     expect(foldScheduleEvents(test.agent.session.events).active).toEqual([
-      expect.objectContaining({ id: 'schedule-first', scheduledAt: '2026-08-05T12:05:00.000Z' }),
+      expect.objectContaining({ id: 'schedule-first', scheduledAt: '2026-08-05T11:55:00.000Z' }),
       expect.objectContaining({ id: 'schedule-second', scheduledAt: '2026-08-05T11:55:00.000Z' }),
     ])
     runtime.requestDrive()
     await settle()
-    expect(test.followed).toHaveLength(1)
+    expect(test.followed).toEqual([])
     stop()
     await runtime.dispose()
   })
 
-  it('does not retry a rejected dispatch barrier until another trigger preflights it', async () => {
+  it('does not queue past a rejected pending barrier and preflights it on the next trigger', async () => {
     const test = await harness()
     appendAfter(test, 'schedule-1', 1, Date.now() - 1_000)
     test.controls.flushOutcomes.push('resolve', 'reject', 'resolve')
@@ -514,12 +538,15 @@ describe('Schedule runtime failure and teardown boundaries', () => {
     runtime.start()
     await settle()
 
-    expect(test.followed).toHaveLength(1)
+    expect(test.followed).toEqual([])
     expect(test.controls.flushCount).toBe(2)
+    const messageId = foldScheduleEvents(test.agent.session.events).pendingDelivery?.messageId
+    expect(messageId).toBeDefined()
     runtime.requestDrive()
     await settle()
-    expect(test.controls.flushCount).toBe(3)
+    expect(test.controls.flushCount).toBeGreaterThan(3)
     expect(test.followed).toHaveLength(1)
+    expect(test.followed[0]?.id).toBe(messageId)
     await runtime.dispose()
 
     const departed = await harness()
@@ -532,8 +559,136 @@ describe('Schedule runtime failure and teardown boundaries', () => {
     const departedRuntime = runtimeFor(departed)
     departedRuntime.start()
     await settle()
-    expect(departed.followed).toHaveLength(1)
+    expect(departed.followed).toEqual([])
     await departedRuntime.dispose()
+  })
+
+  it('cold-rearms the same next-turn identity after a followup outcome is unknown', async () => {
+    const test = await harness()
+    appendAfter(test, 'schedule-1', 1, Date.now() - 1_000)
+    test.controls.consumeFollowup = false
+    test.controls.throwAfterFollowupInsert = true
+    const first = runtimeFor(test)
+    first.start()
+    await settle()
+
+    const pending = foldScheduleEvents(test.agent.session.events).pendingDelivery
+    expect(pending).toMatchObject({ admitted: false })
+    expect(test.agent.inbox.nextTurn.map(message => message.id)).toEqual([pending?.messageId])
+    expect(test.followed.map(message => message.id)).toEqual([pending?.messageId])
+    await first.dispose()
+
+    test.controls.throwAfterFollowupInsert = false
+    test.controls.consumeFollowup = true
+    const restarted = runtimeFor(test)
+    restarted.start()
+    await settle()
+
+    expect(test.followed.map(message => message.id)).toEqual([pending?.messageId, pending?.messageId])
+    expect(test.agent.session.events.filter(event =>
+      event.type === 'user/message' && event.data.id === pending?.messageId)).toHaveLength(1)
+    expect(test.agent.session.events.filter(event =>
+      event.type === 'schedule/change' && event.data.operation === 'delivery-complete')).toHaveLength(1)
+    await restarted.dispose()
+  })
+
+  it('cold-rearms the same identity after Inbox claim is durable but user/message is absent', async () => {
+    const test = await harness()
+    appendAfter(test, 'schedule-1', 1, Date.now() - 1_000)
+    test.controls.consumeFollowup = false
+    const first = runtimeFor(test)
+    first.start()
+    await settle()
+
+    const pending = foldScheduleEvents(test.agent.session.events).pendingDelivery
+    expect(test.agent.inbox.claim('next-turn', ++test.controls.turn).map(message => message.id))
+      .toEqual([pending?.messageId])
+    expect(test.agent.inbox.nextTurn).toEqual([])
+    expect(test.agent.session.events.filter(event => event.type === 'user/message')).toEqual([])
+    await first.dispose()
+
+    test.controls.consumeFollowup = true
+    const restarted = runtimeFor(test)
+    restarted.start()
+    await settle()
+
+    expect(test.followed.map(message => message.id)).toEqual([pending?.messageId, pending?.messageId])
+    expect(test.agent.session.events.filter(event =>
+      event.type === 'user/message' && event.data.id === pending?.messageId)).toHaveLength(1)
+    expect(foldScheduleEvents(test.agent.session.events).pendingDelivery).toBeUndefined()
+    await restarted.dispose()
+  })
+
+  it('cold-completes an admitted user message without another followup', async () => {
+    const test = await harness()
+    appendAfter(test, 'schedule-1', 1, Date.now() - 1_000)
+    const first = runtimeFor(test)
+    test.controls.wakeRuntime = undefined
+    first.start()
+    await settle()
+
+    const pending = foldScheduleEvents(test.agent.session.events).pendingDelivery
+    expect(pending).toMatchObject({ admitted: true })
+    expect(test.followed).toHaveLength(1)
+    await first.dispose()
+
+    const restarted = runtimeFor(test)
+    restarted.start()
+    await settle()
+
+    expect(test.followed).toHaveLength(1)
+    expect(test.agent.session.events.filter(event =>
+      event.type === 'schedule/change' && event.data.operation === 'delivery-complete')).toHaveLength(1)
+    expect(foldScheduleEvents(test.agent.session.events).pendingDelivery).toBeUndefined()
+    await restarted.dispose()
+  })
+
+  it('does not repeat after completion append when its persistence barrier is unknown', async () => {
+    const test = await harness()
+    appendAfter(test, 'schedule-1', 1, Date.now() - 1_000)
+    test.controls.flushOutcomes.push('resolve', 'resolve', 'resolve', 'resolve', 'reject')
+    const first = runtimeFor(test)
+    first.start()
+    await settle()
+
+    expect(test.controls.flushCount).toBe(5)
+    expect(test.followed).toHaveLength(1)
+    expect(test.agent.session.events.filter(event =>
+      event.type === 'schedule/change' && event.data.operation === 'delivery-complete')).toHaveLength(1)
+    first.requestDrive()
+    await settle()
+    expect(test.followed).toHaveLength(1)
+    await first.dispose()
+
+    const restarted = runtimeFor(test)
+    restarted.start()
+    await settle()
+    expect(test.followed).toHaveLength(1)
+    await restarted.dispose()
+  })
+
+  it('fails closed when a pending Schedule identity appears in next-step', async () => {
+    const test = await harness()
+    appendAfter(test, 'schedule-1', 1, Date.now() - 1_000)
+    test.controls.consumeFollowup = false
+    const first = runtimeFor(test)
+    first.start()
+    await settle()
+
+    const message = test.agent.inbox.nextTurn[0]
+    if (message === undefined) throw new Error('expected pending Schedule message')
+    expect(test.agent.inbox.remove(message.id)).toBe(true)
+    test.agent.inbox.append('next-step', message)
+    await first.dispose()
+
+    const restarted = runtimeFor(test)
+    restarted.start()
+    await settle()
+    expect(test.followed).toHaveLength(1)
+    expect(test.agent.inbox.nextStep.map(candidate => candidate.id)).toEqual([message.id])
+    expect(test.agent.session.events.filter(event => event.type === 'user/message')).toEqual([])
+    expect(foldScheduleEvents(test.agent.session.events).pendingDelivery).toMatchObject({ admitted: false })
+    await restarted.dispose()
   })
 
   it('keeps an overdue record pending after a rejected preflight', async () => {
@@ -608,7 +763,7 @@ describe('Schedule runtime failure and teardown boundaries', () => {
     await settle()
     expect(test.followed).toEqual([])
     expect(test.agent.session.events.filter(event =>
-      event.type === 'schedule/change' && event.data.operation === 'dispatch')).toEqual([])
+      event.type === 'schedule/change' && event.data.operation === 'delivery-pending')).toEqual([])
   })
 
   it('faults on corrupt or unreadable durable state after preflight', async () => {
@@ -636,7 +791,7 @@ describe('Schedule runtime failure and teardown boundaries', () => {
     expect(unreadable.followed).toEqual([])
   })
 
-  it('contains runtime startup, maintenance, and framing failures', async () => {
+  it('contains runtime startup and maintenance failures', async () => {
     const startup = await harness()
     const startSpy = vi.spyOn(startup.ctx.agents, 'withoutInitiator')
       .mockImplementation(() => { throw new Error('initiator closing') })
@@ -676,29 +831,6 @@ describe('Schedule runtime failure and teardown boundaries', () => {
     departedMaintenanceRuntime.start()
     await settle()
     expect(departedMaintenance.followed).toEqual([])
-
-    const runFailure = await harness()
-    appendAfter(runFailure, 'schedule-1', 1, Date.now() - 1_000)
-    const uuidSpy = vi.spyOn(globalThis.crypto, 'randomUUID').mockImplementation(() => { throw 'message failed' })
-    const failingRuntime = runtimeFor(runFailure)
-    failingRuntime.start()
-    for (let index = 0; index < 12; index += 1) await Promise.resolve()
-    uuidSpy.mockRestore()
-    failingRuntime.requestDrive()
-    await settle()
-    expect(runFailure.followed).toHaveLength(1)
-
-    const departedRun = await harness()
-    appendAfter(departedRun, 'schedule-1', 1, Date.now() - 1_000)
-    const departedUuidSpy = vi.spyOn(globalThis.crypto, 'randomUUID').mockImplementation(() => {
-      departedRun.disposeAgent()
-      throw 'message failed after detach'
-    })
-    const departedRunRuntime = runtimeFor(departedRun)
-    departedRunRuntime.start()
-    for (let index = 0; index < 12; index += 1) await Promise.resolve()
-    departedUuidSpy.mockRestore()
-    expect(departedRun.followed).toEqual([])
   })
 
   it('releases maintenance without work when liveness changes during its claim', async () => {
@@ -742,11 +874,11 @@ describe('Schedule runtime failure and teardown boundaries', () => {
     expect(test.followed).toEqual([])
   })
 
-  it('does not rearm after dispose begins during the dispatch barrier', async () => {
+  it('does not rearm after dispose begins during the post-queue barrier', async () => {
     const test = await harness()
     appendAfter(test, 'schedule-1', 1, Date.now() - 1_000)
     const barrier = Promise.withResolvers<undefined>()
-    test.controls.flushHandler = () => test.controls.flushCount === 2 ? barrier.promise : undefined
+    test.controls.flushHandler = () => test.controls.flushCount === 3 ? barrier.promise : undefined
     const runtime = runtimeFor(test)
     runtime.start()
     for (let index = 0; index < 12; index += 1) await Promise.resolve()
@@ -755,7 +887,7 @@ describe('Schedule runtime failure and teardown boundaries', () => {
     const disposal = runtime.dispose()
     barrier.resolve(undefined)
     await disposal
-    expect(test.controls.flushCount).toBe(2)
+    expect(test.controls.flushCount).toBe(3)
   })
 
   it('does no work when the exact agent stops being live during preflight', async () => {

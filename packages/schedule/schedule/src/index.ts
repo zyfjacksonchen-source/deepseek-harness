@@ -12,11 +12,13 @@ import { registerScheduleTools } from './tools.ts'
 export type * from './types.ts'
 export {
   SCHEDULE_CHANGE_VERSION,
+  SCHEDULE_DELIVERY_VERSION,
   MIN_EVERY_INTERVAL_SECONDS,
   ScheduleId,
   ScheduleInputError,
   ScheduleLogError,
   allocateScheduleId,
+  createScheduleDeliveryPendingChange,
   createAfterScheduleRecord,
   createAtScheduleRecord,
   createEveryScheduleRecord,
@@ -25,6 +27,8 @@ export {
   renderReminderFraming,
   renderEveryReminderBatchFraming,
   resolveEveryOccurrence,
+  resolveScheduleDueDecision,
+  renderScheduleDeliveryFraming,
   scheduleView,
 } from './domain.ts'
 export { registerScheduleTools } from './tools.ts'

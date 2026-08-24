@@ -4,10 +4,17 @@
  */
 
 import type { Branded } from '@deepseek-ai/dsh-brand'
+import type { MessageId } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-session/types'
 
 /** Stable reminder identity that is unique and never reused within one session. */
 export type ScheduleId = Branded<'ScheduleId'>
+
+/** Stable identity of one admitted schedule occurrence. */
+export type ScheduleOccurrenceId = Branded<'ScheduleOccurrenceId'>
+
+/** Stable identity of one Session-local delivery batch. */
+export type ScheduleDeliveryId = Branded<'ScheduleDeliveryId'>
 
 /** Durable one-shot reminder created from a positive delay. */
 export interface AfterScheduleRecord {
@@ -101,8 +108,47 @@ export interface EveryScheduleDispatchChange {
 /** Durable dispatch shapes supported by the current rule set. */
 export type ScheduleDispatchChange = OneShotScheduleDispatchChange | EveryScheduleDispatchChange
 
-/** Strict version-1 durable Schedule mutation union. */
-export type ScheduleChange = ScheduleCreateChange | ScheduleDeleteChange | ScheduleDispatchChange
+/** One occurrence admitted into a version-2 delivery batch. */
+export interface ScheduleDeliveryOccurrence {
+  /** Deterministic identity derived from the pending event seq, schedule id, and occurrence instant. */
+  readonly occurrenceId: ScheduleOccurrenceId
+  /** Active schedule that produced the occurrence. */
+  readonly scheduleId: ScheduleId
+  /** Canonical UTC occurrence instant. */
+  readonly occurrenceAt: string
+}
+
+/** Durably advances schedules before their deterministic Inbox message is queued. */
+export interface ScheduleDeliveryPendingChange {
+  readonly version: 2
+  readonly operation: 'delivery-pending'
+  /** Deterministic identity of this ordered occurrence batch. */
+  readonly deliveryId: ScheduleDeliveryId
+  /** Deterministic Session-local user-message identity for the batch. */
+  readonly messageId: MessageId
+  /** Wall-clock decision time that selected and advanced the occurrences. */
+  readonly acceptedAt: string
+  /** One one-shot occurrence or the complete due fixed-rate batch. */
+  readonly occurrences: readonly ScheduleDeliveryOccurrence[]
+}
+
+/** Closes one pending delivery after its exact user message is in the Session log. */
+export interface ScheduleDeliveryCompleteChange {
+  readonly version: 2
+  readonly operation: 'delivery-complete'
+  readonly deliveryId: ScheduleDeliveryId
+  readonly messageId: MessageId
+}
+
+/** Strict version-2 delivery mutation union. */
+export type ScheduleDeliveryChange = ScheduleDeliveryPendingChange | ScheduleDeliveryCompleteChange
+
+/** Strict durable Schedule mutation union with lossless version-1 replay. */
+export type ScheduleChange =
+  | ScheduleCreateChange
+  | ScheduleDeleteChange
+  | ScheduleDispatchChange
+  | ScheduleDeliveryChange
 
 /** Current delivery timing derived from the durable record and wall clock. */
 export type ScheduleState = 'scheduled' | 'overdue'
