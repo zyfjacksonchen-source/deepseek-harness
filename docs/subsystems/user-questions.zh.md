@@ -32,16 +32,23 @@ interface AskUserQuestionOption {
  * not know a tag renders the generic flow, and the answer encoding is identical
  * either way — an intent changes presentation only, never the protocol.
  */
-type AskUserQuestionIntent = {
-  /** A plan submitted for review: `detail` is the plan markdown `ask()` requires, and the decision approves or declines it. */
-  kind: 'plan-review'
-  /**
-   * The option label that approves the plan; every other option declines it.
-   * Named rather than positional so no UI infers the verdict from option order.
-   * An `approve` naming no option of its own question is rejected at `ask()`.
-   */
-  approve: string
-}
+type AskUserQuestionIntent =
+  | {
+    /** A plan submitted for review: `detail` is the plan markdown `ask()` requires, and the decision approves or declines it. */
+    kind: 'plan-review'
+    /** The exact option label that approves the plan. */
+    approve: string
+  }
+  | {
+    /** A generated image candidate that must be inspected before semantic acceptance. */
+    kind: 'image-review'
+    /** The exact option label that accepts the candidate. */
+    approve: string
+    /** Session-authorized immutable source images, in request order. */
+    sources: ImageAttachmentRef[]
+    /** Session-authorized immutable candidate output. */
+    output: ImageAttachmentRef
+  }
 ```
 
 ## 问题条目
@@ -174,5 +181,5 @@ registerProvider(provider: UserQuestionProvider): () => void
 async ask(request: AskUserQuestionRequest): Promise<AskUserQuestionAnswer>
 ```
 
-Source: [`packages/interaction/user-questions/src/index.ts:51`](../../packages/interaction/user-questions/src/index.ts)
+Source: [`packages/interaction/user-questions/src/index.ts:68`](../../packages/interaction/user-questions/src/index.ts)
 <!-- END GENERATED cordis-surface -->

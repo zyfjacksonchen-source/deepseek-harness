@@ -94,7 +94,11 @@ export function planReviewOf(questions: readonly QuestionItem[]): PlanReview | u
   }
 }
 
-/** Narrow a single binary question to the native image-review presentation. */
+/**
+ * Narrow a single binary question to the native image-review presentation.
+ * @param questions - the request's whole question batch.
+ * @returns The narrowed review, or undefined when the generic flow owns it.
+ */
 export function imageReviewOf(questions: readonly QuestionItem[]): ImageReview | undefined {
   if (questions.length !== 1) return undefined
   const question = questions[0] as QuestionItem
