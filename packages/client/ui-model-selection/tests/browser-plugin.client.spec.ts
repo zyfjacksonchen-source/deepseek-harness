@@ -57,12 +57,13 @@ const GROUPS = [{
 async function bench() {
   const ctx = new Context()
   let current: ModelSelection = { provider: 'deepseek-official', model: 'deepseek-v4-flash' }
+  let groups = GROUPS
   const calls = { models: 0, select: 0 }
   ctx.provide('connection', { api: { sessions: {
     models: () => {
       calls.models += 1
       return Promise.resolve({
-        result: { ok: true as const, value: { current, routable, groups: GROUPS, failures: [] } },
+        result: { ok: true as const, value: { current, routable, groups, failures: [] } },
       })
     },
     selectModel: (payload: { provider: string; model: string; reasoningEffort?: string }) => {
@@ -128,6 +129,7 @@ async function bench() {
     seat: () => seats.get('conversation.input.model')!,
     hostCurrent: () => current,
     setHostCurrent: (selection: ModelSelection) => { current = selection },
+    setGroups: (next: typeof GROUPS) => { groups = next },
     address: (id: SessionId) => { addressed.add(id) },
     setRoutable: (next: boolean) => { routable = next },
     blockOf: (key: string) => blocks.get(sid(key)),
@@ -258,6 +260,26 @@ describe('ui-model-selection dual entry', () => {
     await Promise.resolve()
     await Promise.resolve()
     expect(b.blockOf('s1')).toBeUndefined()
+  })
+
+  it('recovers an empty catalog on credential commit without replacing the session current', async () => {
+    const b = await bench()
+    b.mint('s1')
+    const face = b.seat().inject!(sid('s1'))
+    const current = { provider: 'deepseek-official', model: 'deepseek-v4-pro' }
+    b.setHostCurrent(current)
+    b.setGroups([])
+    await face.load()
+    expect(face.directory.getSnapshot()).toMatchObject({ current, groups: [] })
+
+    b.setGroups(GROUPS)
+    b.ctx.remote.$dispatch('credentials/updated', ['E_MATE_ENTERPRISE_SESSION'])
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(face.directory.getSnapshot()).toMatchObject({ current, groups: GROUPS })
+    expect(b.hostCurrent()).toEqual(current)
+    expect(b.calls.select).toBe(0)
   })
 
   it('never blocks on catalog membership alone', async () => {
