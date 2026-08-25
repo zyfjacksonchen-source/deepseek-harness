@@ -150,6 +150,20 @@ type InferArgs<S> = InferProperties<S, []>
 
 注册是一项受信任的同进程约定。注册表以 readonly 输入借用已类型化定义，要求它声明 `output`，校验其原始 schema，并检查 `timeoutMs` 必须为正有限值等语义要求；`schemas()` 在构建请求时生成面向模型的投影，使执行和展示共享同一份已解析定义，而不会将回调泄漏到协议上。
 
+## `ToolRegistrationProvenance` — 可见注册的 Loader 身份
+
+`provenance(name, scope?)` 与 `get()` 读取同一个已解析注册表 entry。`register()` 只在注册时从调用方 Cordis fiber 的实际 Loader entry 复制模块说明符与插件 fiber 名，并把冻结快照与定义放在同一 entry、交给同一 effect teardown；因此可变 Loader Entry 后续改变时，快照不会漂移。没有 Loader entry 就不作归因。限制、遮蔽、HMR 替换或 dispose 只会通过改变实际可见 winner 来改变答案；查询不会扫描 Loader 状态，也不会回退到隐藏注册。该值只供 host 使用，不进入模型 schema、提示词组装或会话协议数据；它是来源证据，不是授权声明。
+
+```ts type-equiv
+/** Loader-owned identity snapshotted when the visible tool winner registered. */
+interface ToolRegistrationProvenance {
+  /** Exact module specifier from the registration fiber's Loader entry. */
+  readonly moduleSpecifier: string
+  /** Cordis plugin name of the registration fiber. */
+  readonly pluginName: string
+}
+```
+
 ## `ToolRestriction` — 单个作用域对其继承内容的实时过滤器
 
 `ToolRestriction` 作用于该作用域继承来的工具：部署全局层，加上其链上的每个祖先作用域。注册表将 readonly 名称编译为私有集合，对多个限制取交集，再叠加该作用域**自身**的注册——后者不受约束，因此被委派的子 agent 会保留其回报所依赖的工具。仅 deny 的过滤器允许后续未列出的继承工具通过，而 allow 列表则排除它们。
@@ -536,6 +550,17 @@ guard(guard: ToolGuard): () => void
 get(name: string, scope?: ScopeKey): ToolDefinition | undefined
 
 /**
+ * Read the Loader identity captured by the tool registration currently
+ * visible to one scope. Scoped shadows and restrictions use the same winner
+ * as {@link get}; direct registrations without a Loader entry are
+ * intentionally unattributed, and never fall back to a hidden registration.
+ * @param name - the tool name as registered.
+ * @param scope - the viewing scope (the agent); omitted = the global view.
+ * @returns the visible winner's frozen registration identity, or undefined.
+ */
+provenance(name: string, scope?: ScopeKey): ToolRegistrationProvenance | undefined
+
+/**
  * Project visible definitions onto the allowlisted model-facing schema fields,
  * excluding execution and presentation callbacks.
  * @param scope - the viewing scope (the agent); omitted = the global view.
@@ -571,7 +596,7 @@ async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>
 
 Types: [ScopeKey](scope.md)
 
-Source: [`packages/core/tools/src/index.ts:787`](../../packages/core/tools/src/index.ts)
+Source: [`packages/core/tools/src/index.ts:817`](../../packages/core/tools/src/index.ts)
 
 <a id="tools-events"></a>
 
@@ -596,7 +621,7 @@ A tool was registered or unregistered, or a scoped restriction changed (the avai
 'tools/change'(): void
 ```
 
-Source: [`packages/core/tools/src/index.ts:207`](../../packages/core/tools/src/index.ts)
+Source: [`packages/core/tools/src/index.ts:208`](../../packages/core/tools/src/index.ts)
 
 <a id="toolscode-dispatch-log--waterfall"></a>
 
@@ -623,7 +648,7 @@ Allow a listener to replace content in the DURABLE LOG COPY of one `run_code` su
 
 Types: [ContentBlock](llm-streaming.md) · [Scoped](scope.md)
 
-Source: [`packages/core/tools/src/index.ts:189`](../../packages/core/tools/src/index.ts)
+Source: [`packages/core/tools/src/index.ts:190`](../../packages/core/tools/src/index.ts)
 
 <a id="toolsexecute--waterfall"></a>
 
@@ -647,7 +672,7 @@ Around-dispatch waterfall for timeout, retry, or metrics. `next()` returns a nor
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/core/tools/src/index.ts:163`](../../packages/core/tools/src/index.ts)
+Source: [`packages/core/tools/src/index.ts:164`](../../packages/core/tools/src/index.ts)
 
 <a id="toolspost-execute--waterfall"></a>
 
@@ -672,7 +697,7 @@ Accept, replace, enrich, or block a normalized dispatch result. `next()` accepts
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/core/tools/src/index.ts:175`](../../packages/core/tools/src/index.ts)
+Source: [`packages/core/tools/src/index.ts:176`](../../packages/core/tools/src/index.ts)
 
 <a id="toolspre-execute--waterfall"></a>
 
@@ -695,7 +720,7 @@ Allow, deny, or ask before dispatch. `next()` delegates to allow; missing approv
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/core/tools/src/index.ts:152`](../../packages/core/tools/src/index.ts)
+Source: [`packages/core/tools/src/index.ts:153`](../../packages/core/tools/src/index.ts)
 
 <a id="toolsresult--emit"></a>
 
@@ -716,5 +741,5 @@ Observe the frozen, lossless-JSON final outcome. Listener failures are contained
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/core/tools/src/index.ts:197`](../../packages/core/tools/src/index.ts)
+Source: [`packages/core/tools/src/index.ts:198`](../../packages/core/tools/src/index.ts)
 <!-- END GENERATED cordis-surface -->

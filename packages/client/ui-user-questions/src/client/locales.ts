@@ -17,6 +17,10 @@ export const zh = {
   'plan.approve': '确认执行',
   'plan.decline': '拒绝',
   'plan.discuss': '去聊天里说',
+  'image.source': '源图',
+  'image.output': '候选结果',
+  'image.loading': '正在加载源图与候选结果…',
+  'image.loadError': '图片加载失败，无法确认；可拒绝后重新尝试。',
 } satisfies Record<string, string>
 
 /** The question namespace key union. */
@@ -39,4 +43,8 @@ export const en = {
   'plan.approve': 'Approve',
   'plan.decline': 'Refuse',
   'plan.discuss': 'Chat about it',
+  'image.source': 'Source',
+  'image.output': 'Candidate output',
+  'image.loading': 'Loading source and candidate images…',
+  'image.loadError': 'Images could not be loaded. Refuse this candidate and retry.',
 } satisfies Record<QuestionKey, string>

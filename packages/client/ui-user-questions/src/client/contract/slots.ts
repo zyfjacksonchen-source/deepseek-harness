@@ -6,10 +6,10 @@
  * cancelled error encoding, receipt checks — lives HERE, with the package
  * that consumes it.
  */
-import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 // Also pulls ui-conversation's SlotMap merge (the 'conversation.composer'
 // entry) into every program that sees this contract, so PropsRuntime resolves.
-import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { IConversation } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { PendingWait } from '@deepseek-ai/dsh-client-runtime/client'
 import type { QuestionResponsePayload } from '@deepseek-ai/dsh-api-remotes/client'
 
@@ -24,6 +24,9 @@ type QuestionItem = QuestionWait['payload']['questions'][number]
 
 /** One option the asker offered on a question. */
 type QuestionOption = NonNullable<QuestionItem['options']>[number]
+
+/** Native conversation attachment vocabulary; keeps preview authorization on its existing owner. */
+type ImageAttachment = Parameters<IConversation['resolveImage']>[1]
 
 /**
  * A request narrowed to the `plan-review` presentation intent: everything the
@@ -43,6 +46,13 @@ export interface PlanReview {
   approve: QuestionOption
   /** The option that declines it; absent when the asker offered no other option. */
   decline?: QuestionOption
+}
+
+/** Immutable source/output set rendered before an image edit can be accepted. */
+export interface ImageReview {
+  approve: QuestionOption
+  sources: readonly ImageAttachment[]
+  output: ImageAttachment
 }
 
 /**
@@ -82,6 +92,32 @@ export function planReviewOf(questions: readonly QuestionItem[]): PlanReview | u
     approve,
     ...(decline === undefined ? {} : { decline }),
   }
+}
+
+/**
+ * Narrow a single binary question to the native image-review presentation.
+ * @param questions - the request's whole question batch.
+ * @returns The narrowed review, or undefined when the generic flow owns it.
+ */
+export function imageReviewOf(questions: readonly QuestionItem[]): ImageReview | undefined {
+  if (questions.length !== 1) return undefined
+  const question = questions[0] as QuestionItem
+  const intent = question.intent
+  if (intent?.kind !== 'image-review' || question.detail === undefined || question.multiSelect === true) return undefined
+  const options = question.options ?? []
+  if (options.length > 2 || intent.sources.length === 0) return undefined
+  const approve = options.find(option => option.label === intent.approve)
+  if (approve === undefined) return undefined
+  return {
+    approve,
+    sources: intent.sources,
+    output: intent.output,
+  }
+}
+
+/** Browser callbacks injected from the owning conversation service. */
+export interface QuestionComposerInjected {
+  loadImage: (attachment: ImageAttachment) => Promise<string>
 }
 
 /**
@@ -140,4 +176,5 @@ export class PendingQuestion {
  * whole behavior surface.
  */
 export type QuestionComposerProps =
-  PropsRuntime<'conversation.composer'> & { matched: QuestionWait } & PropsLocale<'question'>
+  PropsRuntime<'conversation.composer'> & { matched: QuestionWait }
+  & InjectFace<QuestionComposerInjected> & PropsLocale<'question'>

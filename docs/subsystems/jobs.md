@@ -23,13 +23,14 @@ interface JobKindMap {
 
 ## Producer contract
 
-`JobStart` declares identity and a starter. The runtime finishes preflight before calling `run()` and commits without a later failable step. Producers own execution resources; the runtime owns identity, access, and lifecycle state.
+`JobStart` declares identity and a starter. Ordinary `start()` finishes preflight before calling `run()` and registers only after the starter succeeds. `startWhenAvailable()` registers first and delays only `run()`; its `JobAdmission` separates the immediate id from producer startup. Producers own execution resources; the runtime owns identity, access, and lifecycle state.
 
 ```ts type-equiv
 /**
- * Producer declaration passed to {@link JobRegistry.start}. The runtime
- * preflights access and cleanup before invoking {@link run}; the producer owns
- * execution resources while the runtime owns identity and lifecycle state.
+ * Producer declaration passed to a {@link JobRegistry} start method. The
+ * runtime preflights access and cleanup before invoking {@link run}; the
+ * producer owns execution resources while the runtime owns identity and
+ * lifecycle state.
  */
 interface JobStart {
   /** Producer kind — also the id prefix (`bash`, `subagent`, …). */
@@ -50,10 +51,27 @@ interface JobStart {
   owner?: Agent
   /**
    * Start the work after preflight and synchronously return its hooks. Called
-   * once; a throw leaves nothing registered, and the producer must clean up any
-   * partially started resources.
+   * once. A throw from {@link JobRegistry.start} leaves nothing registered; a
+   * throw after queued admission fails that registered Job. The producer must
+   * clean up any partially started resources.
    */
   run(): JobHooks
+}
+```
+
+`JobAdmission.id` is usable immediately through the native Job API. `admitted` resolves after `run()` returns and hooks are installed, not after producer completion; cancellation or teardown before startup and a synchronous starter throw reject it after settling the registered Job to a terminal state.
+
+```ts type-equiv
+/** Handle returned once queued admission has registered its Job. */
+interface JobAdmission {
+  /** The immediately registered Job id. */
+  id: JobId
+  /**
+   * Resolves after the producer starter returns and its hooks are installed;
+   * it does not await producer completion. Rejects when cancellation or
+   * teardown settles the Job before producer start, or when the starter throws.
+   */
+  admitted: Promise<void>
 }
 ```
 
@@ -154,7 +172,7 @@ interface JobRead {
 
 ## Service behavior
 
-The abstract [`JobRegistry`](../../packages/jobs/jobs/src/index.ts) Service Definition specifies atomic `start`, caller-scoped `get` and `list`, `read`, `kill`, bounded `wait`, failure-isolated `onJobDone` and `onJobsChanged` listeners, and when `attachController` becomes available; [`LocalJobRegistry`](../../packages/jobs/jobs-local/src/index.ts) is the process-local Service Provider. Authorization compares owner sessions; owner cleanup and admission use the exact registered `Agent` instance. The local provider's positive-safe-integer `maxConcurrentJobsPerOwner` config defaults to `10` and counts `running` plus `stopping` records per exact owner, with one shared bucket for unowned jobs; terminal producer settlement releases capacity. See [`dsh-jobs`](../../packages/jobs/jobs/README.md) for the Service Definition contract, [`dsh-jobs-local`](../../packages/jobs/jobs-local/README.md) for the registry lifecycle and admission policy, and [`dsh-tool-jobs`](../../packages/jobs/tool-jobs/README.md) for the model-facing Consumer.
+The abstract [`JobRegistry`](../../packages/jobs/jobs/src/index.ts) Service Definition specifies atomic `start`, opt-in `startWhenAvailable`, caller-scoped `get` and `list`, `read`, `kill`, bounded `wait`, failure-isolated `onJobDone` and `onJobsChanged` listeners, and when `attachController` becomes available; [`LocalJobRegistry`](../../packages/jobs/jobs-local/src/index.ts) is the process-local Service Provider. Authorization compares owner sessions; owner cleanup and admission use the exact registered `Agent` instance. The local provider's positive-safe-integer `maxConcurrentJobsPerOwner` config defaults to `10` and counts every waiting, `running`, or `stopping` record per exact owner, with one shared bucket for unowned Jobs. A process-wide per-kind FIFO may delay producer startup behind one started Job; it retains at most 64 waiting JobIds and releases the lane only from terminal Job settlement. See [`dsh-jobs`](../../packages/jobs/jobs/README.md) for the Service Definition contract, [`dsh-jobs-local`](../../packages/jobs/jobs-local/README.md) for the registry lifecycle and admission policy, and [`dsh-tool-jobs`](../../packages/jobs/tool-jobs/README.md) for the model-facing Consumer.
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
@@ -176,6 +194,7 @@ Implementations must honor these semantics:
 - Owned-job access is fenced by the owner's session id. Ids are predictable, so authorization — not secrecy — is the boundary.
 - Settlement is first-wins: one terminal record, released waiters, and one round of contained listener notification, even against a late producer outcome. Completion is announced last, after the record is committed and every other observer of the settlement has seen it, because a reporter may open a model turn synchronously.
 - start refuses work while no attached job controller serves the spec's owner, so a producer cannot start work that owner cannot collect or stop. One registry serves every composition in the process, so this question — and completion-listener delivery — is owner-relative rather than process-wide: registrations made from an unscoped context serve every owner, and registrations made under an agent composition's scope serve exactly the agents composed under it.
+- startWhenAvailable immediately registers a real Job, then uses an opt-in process-wide FIFO to delay only producer execution for kinds that require one active producer across owners. Waiting Jobs use the ordinary owner access, cancellation, and teardown lifecycle. Terminal Job settlement releases the lane; ordinary start remains synchronous and unqueued. Implementations reject a kind's 65th waiter before id allocation or producer execution.
 
 ```ts cordis-catalog
 /**
@@ -188,6 +207,26 @@ Implementations must honor these semantics:
  * @returns the registry-issued `<kind>-N` id.
  */
 abstract start(spec: JobStart): JobId
+
+/**
+ * Register a Job immediately, then wait in FIFO order until no started Job of
+ * the same kind remains before invoking `spec.run()`. The wait is
+ * process-wide across owners, but the Job keeps `spec.owner` for native
+ * access, cancellation, and cleanup while waiting.
+ *
+ * This is an opt-in admission path: ordinary {@link start} stays immediate
+ * and does not join the queue. The ordinary per-owner limit includes waiting
+ * Jobs and is checked before the fixed 64-waiter per-kind limit. A waiting
+ * abort, kill, owner disposal, or service disposal settles the Job as
+ * `killed` without invoking `run()` and rejects `admitted`; a synchronous
+ * starter throw settles the already registered Job as `failed` and also
+ * rejects `admitted`. Authoritative terminal Job settlement releases the
+ * lane. Settlement remains first-wins.
+ * @param spec - job identity, owner, and synchronous starter.
+ * @param signal - optional cancellation while waiting for admission.
+ * @returns the registered id and producer-start admission Promise.
+ */
+abstract startWhenAvailable(spec: JobStart, signal?: AbortSignal): JobAdmission
 
 /**
  * List caller-owned and unowned jobs in registration order without exposing
@@ -286,5 +325,5 @@ abstract attachController(name: string): () => void
 
 Types: [Agent](core.md)
 
-Source: [`packages/jobs/jobs/src/index.ts:62`](../../packages/jobs/jobs/src/index.ts)
+Source: [`packages/jobs/jobs/src/index.ts:70`](../../packages/jobs/jobs/src/index.ts)
 <!-- END GENERATED cordis-surface -->

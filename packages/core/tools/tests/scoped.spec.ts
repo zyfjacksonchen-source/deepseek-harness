@@ -77,6 +77,9 @@ describe('scoped tool registration', () => {
     expect(ctx.tools.schemas(key).map(t => t.name).sort()).toEqual(['mine', 'shared'])
     expect(ctx.tools.schemas().map(t => t.name)).toEqual(['shared'])
     expect(ctx.tools.schemas(other).map(t => t.name)).toEqual(['shared'])
+    expect(ctx.tools.provenance('mine', key)).toBeUndefined()
+    expect(ctx.tools.provenance('mine')).toBeUndefined()
+    expect(ctx.tools.provenance('shared', key)).toBeUndefined()
 
     expect(await run(ctx, 'mine', key)).toBe('ran:mine')
     // Out-of-view execution is indistinguishable from a nonexistent tool.
@@ -92,6 +95,8 @@ describe('scoped tool registration', () => {
     ctx.tools.register(tool('bash', 'global-bash'))
     expect(await run(ctx, 'bash', key)).toBe('restricted-bash')
     expect(await run(ctx, 'bash')).toBe('global-bash')
+    expect(ctx.tools.provenance('bash', key)).toBeUndefined()
+    expect(ctx.tools.provenance('bash')).toBeUndefined()
     expect(ctx.tools.get('bash', key)?.description).toBe(ctx.tools.get('bash', key)?.description)
     // Exactly one 'bash' in the scope's schema view (the shadow, not a double).
     expect(ctx.tools.schemas(key).filter(t => t.name === 'bash')).toHaveLength(1)
@@ -113,6 +118,7 @@ describe('scoped tool registration', () => {
     expect(ctx.tools.get('mine', key)).toBeDefined()
     await scope.dispose()
     expect(ctx.tools.get('mine', key)).toBeUndefined()
+    expect(ctx.tools.provenance('mine', key)).toBeUndefined()
     expect(ctx.tools.schemas(key)).toEqual([])
   })
 })
@@ -128,6 +134,8 @@ describe('restrict()', () => {
 
     // The scope-local registration survives the allow-list; the unlisted global is gone.
     expect(ctx.tools.schemas(key).map(t => t.name).sort()).toEqual(['capture', 'read'])
+    expect(ctx.tools.provenance('bash', key)).toBeUndefined()
+    expect(ctx.tools.provenance('read', key)).toBeUndefined()
     expect(await run(ctx, 'bash', key)).toBe('Error: unknown tool "bash"')
     expect(await run(ctx, 'read', key)).toBe('ran:read')
     expect(await run(ctx, 'capture', key)).toBe('ran:capture')

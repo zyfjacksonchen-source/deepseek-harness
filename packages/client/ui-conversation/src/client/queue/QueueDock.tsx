@@ -40,7 +40,7 @@ export function QueueDock({ useSession, updateQueue, notify, t }: QueueDockProps
 
   useEffect(() => {
     if (queue.length === 0 && !collapsed) setCollapsed(true)
-    if (editing !== null && (!queueMutable || !queue.some(row => row.id === editing.id))) setEditing(null)
+    if (editing !== null && (!queueMutable || !queue.some(row => row.id === editing.id && row.mutable))) setEditing(null)
   }, [collapsed, editing, queue, queueMutable])
 
   if (queue.length === 0) return null
@@ -120,7 +120,7 @@ export function QueueDock({ useSession, updateQueue, notify, t }: QueueDockProps
                   />
                 )
                 : <span className={css.preview}>{row.preview}</span>}
-              {queueMutable && <div className={css.actions}>
+              {queueMutable && row.mutable && <div className={css.actions}>
                 {editing?.id === row.id
                   ? (
                     <>

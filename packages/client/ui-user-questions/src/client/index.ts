@@ -22,7 +22,7 @@ import { en, zh, type QuestionKey } from './locales.ts'
 
 export { PendingQuestion } from './contract/slots.ts'
 export type {
-  PlanReview, QuestionAnswer, QuestionComposerProps, QuestionWait,
+  ImageReview, PlanReview, QuestionAnswer, QuestionComposerProps, QuestionWait,
 } from './contract/slots.ts'
 export type { QuestionKey } from './locales.ts'
 
@@ -37,7 +37,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 const NS = 'question'
 
 /** Required services: the slot registry and the question composer's copy. */
-export const inject = ['slots', 'locale']
+export const inject = ['slots', 'locale', 'conversation']
 
 /** Chain routing: claim the composer while a question wait is pending (pure — owner props only). */
 function selectQuestion({ interactions }: ComposerChainProps): QuestionWait | null {
@@ -54,7 +54,12 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-user-questions: dictionaries')
 
   ctx.slots.inject('conversation.composer', () => ctx.slots.register(
-    { name: 'conversation.composer', select: selectQuestion, locale: NS },
+    {
+      name: 'conversation.composer', select: selectQuestion, locale: NS,
+      inject: sessionId => ({
+        loadImage: attachment => ctx.conversation.resolveImage(sessionId, attachment),
+      }),
+    },
     QuestionComposer,
   ))
 }

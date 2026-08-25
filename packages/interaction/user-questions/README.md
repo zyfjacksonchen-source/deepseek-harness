@@ -15,7 +15,7 @@ User-interaction Service Definition. It owns `ctx.userQuestions`, the service a 
 
 - `AskUserQuestionRequest` — `{ questions: [{ id, question, detail?, header?, options?, multiSelect?, intent? }], agent?, signal? }`; `detail` supplies supporting text that providers render with the question without turning it into an option label. When present, `agent` must be the registry's exact live runtime root.
 - `AskUserQuestionOption` — `{ label, description? }`.
-- `AskUserQuestionIntent` — `{ kind: 'plan-review', approve }`; the tagged presentation intent below.
+- `AskUserQuestionIntent` — `{ kind: 'plan-review', approve }` or `{ kind: 'image-review', approve, sources, output }`; the tagged presentation intents below.
 - `AskUserQuestionAnswer` — `{ answers: [{ id, selected, custom? }] }`.
 - `UserQuestionProvider` — UI implementation with `ask(request)`.
 - `UserQuestionError` — `HarnessError` subclass with codes such as `EMPTY_QUESTIONS`, `BAD_INTENT`, `NO_PROVIDER`, `DUPLICATE_PROVIDER`, `ASK_ABORTED`, `CALLER_NOT_LIVE`, and `DELEGATED_CALLER`.
@@ -26,7 +26,7 @@ When a request carries an agent, `ask()` authenticates its exact identity throug
 
 ### Presentation intent
 
-`intent` declares that a question IS a known kind of decision, so a UI that recognises the tag may present it as such — `plan-review` says `detail` is a plan under review, and `dsh-plan-mode` sets it on the `exit_plan_mode` question. An intent changes presentation only: a UI honouring it answers with the same option labels a generic UI would send, and a UI that does not know the tag renders the generic option list, so callers read the same answer fields either way. `approve` names the label that approves rather than relying on option order. `ask()` rejects with `BAD_INTENT` the two assertions no type can carry: an `approve` naming none of that question's own options, and an intent on a question with no `detail` — the thing it declares itself a review of.
+`intent` declares that a question IS a known kind of decision, so a UI that recognises the tag may present it as such. `plan-review` says `detail` is a plan under review, and `dsh-plan-mode` sets it on the `exit_plan_mode` question. `image-review` carries one to sixteen immutable, session-authorized source-image references and one immutable candidate reference so a capable UI can show the evidence before enabling acceptance. An intent changes presentation only: a UI honouring it answers with the same option labels a generic UI would send, and a UI that does not know the tag renders the generic option list, so callers read the same answer fields either way. `approve` names the label that approves rather than relying on option order. `ask()` rejects with `BAD_INTENT` an approve label that names none of the question's options, an intent with no `detail`, or an image review with an empty, oversized, mutable, or malformed attachment set.
 
 ## Role
 
@@ -43,4 +43,4 @@ No direct invalidation; the named consumer owns any request-prefix changes.
 ## Known Limitations and Deferred Work
 
 - **One provider per context** — there is no routing or fan-out to multiple UIs; a second registration throws `DUPLICATE_PROVIDER`, and with none registered `ask()` throws `NO_PROVIDER` rather than degrading.
-- **The vocabulary is the question-form shape only** — selectable options plus optional custom text; richer interaction shapes (file pickers, diff-preview confirmations) have no seam vocabulary yet.
+- **Evidence is caller-owned** — `image-review` transports immutable image references but performs no visual or semantic verification itself; the calling Job remains responsible for the decision's durable consequence.

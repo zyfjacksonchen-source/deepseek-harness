@@ -312,6 +312,8 @@ export type ToolCallBlock = RunningToolCall | ToolResultNode
 /** One transient inbox occurrence from the authoritative `session/queue` snapshot. */
 export interface QueuedMessage {
   readonly id: MessageId
+  /** Host authorization truth; producer-owned pending input is read-only. */
+  readonly mutable: boolean
   /** Stable message identity used for transient-to-durable steering handoff. */
   readonly messageId: MessageId
   /** Agent-resolved placement; only queued rows accept queue mutations. */

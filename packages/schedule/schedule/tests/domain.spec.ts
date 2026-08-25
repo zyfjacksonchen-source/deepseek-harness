@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { freezeMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import {
   ScheduleId,
@@ -8,18 +9,31 @@ import {
   canonicalizeTimeZone,
   createAfterScheduleRecord,
   createAtScheduleRecord,
+  createScheduleDeliveryPendingChange,
   createEveryScheduleRecord,
   decodeScheduleChange,
+  decodeScheduleDeliveryChange,
   foldScheduleEvents,
   MIN_EVERY_INTERVAL_SECONDS,
+  type PendingScheduleDelivery,
   renderEveryReminderBatchFraming,
   renderReminderFraming,
+  renderScheduleDeliveryFraming,
   resolveEveryOccurrence,
+  resolveScheduleDueDecision,
   scheduleView,
 } from '../src/domain.ts'
 
 function scheduleEvent(data: unknown, seq = 0): SessionEvent {
   return { type: 'schedule/change', seq, time: 1, data } as SessionEvent
+}
+
+function deliveryEvent(data: unknown, seq: number): SessionEvent {
+  return { type: 'schedule/delivery', seq, time: 1, data, ignorable: true } as unknown as SessionEvent
+}
+
+function userEvent(data: unknown, seq: number): SessionEvent {
+  return { type: 'user/message', seq, time: 1, data, surfaceOp: 'append' } as SessionEvent
 }
 
 function createData(id = 'schedule-1', prompt = 'check logs', scheduledAt = '2026-08-05T12:00:00.000Z') {
@@ -48,6 +62,39 @@ function everyCreateData(
     operation: 'create',
     schedule: { id, kind: 'every', prompt, everySeconds: 300, scheduledAt },
   }
+}
+
+function pendingChange(
+  creates: readonly unknown[],
+  acceptedAt: string,
+  deliverySeq: number,
+) {
+  const records = creates.map((data) => {
+    const change = decodeScheduleChange(data)
+    if (change.operation !== 'create') throw new Error('expected create')
+    return change.schedule
+  })
+  const decision = resolveScheduleDueDecision(records, Date.parse(acceptedAt))
+  if (decision.kind === 'wait') throw new Error('expected due decision')
+  return createScheduleDeliveryPendingChange(decision, deliverySeq)
+}
+
+function requirePending(
+  events: readonly SessionEvent[],
+  seedLength = 0,
+): PendingScheduleDelivery {
+  const pending = foldScheduleEvents(events, seedLength).pendingDelivery
+  if (pending === undefined) throw new Error('expected pending delivery')
+  return pending
+}
+
+function deliveryMessage(delivery: PendingScheduleDelivery): UserMessage {
+  return freezeMessage({
+    id: delivery.messageId,
+    role: 'user',
+    content: [{ type: 'text', text: renderScheduleDeliveryFraming(delivery) }],
+    source: { kind: 'plugin', plugin: 'schedule' },
+  })
 }
 
 describe('version-1 Schedule decoding and folding', () => {
@@ -152,6 +199,255 @@ describe('version-1 Schedule decoding and folding', () => {
       .toBe('schedule-4')
     expect(allocateScheduleId({ active: [], seenIds: [ScheduleId('one'), ScheduleId('schedule-2')] }))
       .toBe('schedule-3')
+  })
+})
+
+describe('version-2 Schedule delivery protocol', () => {
+  const dueAt = '2026-08-05T12:00:00.000Z'
+
+  it('strictly decodes and freezes exact pending and complete mutations', () => {
+    const pending = pendingChange([createData()], dueAt, 1)
+    const complete = {
+      version: 2,
+      operation: 'delivery-complete',
+      deliveryId: pending.deliveryId,
+      messageId: pending.messageId,
+    } as const
+
+    const decoded = decodeScheduleDeliveryChange(pending)
+    expect(decoded).toEqual(pending)
+    expect(decodeScheduleDeliveryChange(complete)).toEqual(complete)
+    expect(Object.isFrozen(decoded)).toBe(true)
+    if (decoded.operation !== 'delivery-pending') throw new Error('expected pending')
+    expect(Object.isFrozen(decoded.occurrences)).toBe(true)
+    expect(Object.isFrozen(decoded.occurrences[0])).toBe(true)
+
+    const occurrence = pending.occurrences[0]!
+    for (const malformed of [
+      { ...pending, extra: true },
+      { ...pending, occurrences: [] },
+      { ...pending, occurrences: [{ ...occurrence, extra: true }] },
+      { ...pending, deliveryId: 'schedule-delivery-v2-bad' },
+      { ...pending, messageId: `schedule-message-v2-${'a'.repeat(42)}` },
+      { ...pending, acceptedAt: 'not-an-instant' },
+      { ...complete, extra: true },
+      { version: 2, operation: 'dispatch', id: 'schedule-1' },
+    ]) {
+      expect(() => decodeScheduleDeliveryChange(malformed)).toThrow(ScheduleLogError)
+    }
+  })
+
+  it('admits one one-shot message only between its exact pending and complete events', () => {
+    const create = scheduleEvent(createData(), 0)
+    const pending = pendingChange([createData()], dueAt, 1)
+    const pendingEvent = deliveryEvent(pending, 1)
+    const delivery = requirePending([create, pendingEvent])
+    const message = deliveryMessage(delivery)
+    const complete = deliveryEvent({
+      version: 2,
+      operation: 'delivery-complete',
+      deliveryId: delivery.deliveryId,
+      messageId: delivery.messageId,
+    }, 4)
+
+    expect(foldScheduleEvents([create, pendingEvent])).toMatchObject({
+      active: [expect.objectContaining({ id: 'schedule-1' })],
+      seenIds: ['schedule-1'],
+      pendingDelivery: delivery,
+    })
+    expect(() => foldScheduleEvents([create, pendingEvent, userEvent(message, 2)]))
+      .toThrow(/dispatch before user\/message/)
+    const mirrored = scheduleEvent({ version: 1, operation: 'dispatch', id: 'schedule-1' }, 2)
+    const ready = requirePending([create, pendingEvent, mirrored])
+    expect(foldScheduleEvents([create, pendingEvent, mirrored, userEvent(message, 3)]).pendingDelivery)
+      .toEqual({
+        ...ready,
+        admittedOccurrenceIds: ready.occurrences.map(occurrence => occurrence.occurrenceId),
+        admitted: true,
+        admittedDeterministicText: renderScheduleDeliveryFraming(ready),
+      })
+    expect(foldScheduleEvents([
+      create,
+      pendingEvent,
+      mirrored,
+      userEvent(message, 3),
+      complete,
+    ])).toEqual({
+      active: [],
+      seenIds: ['schedule-1'],
+    })
+
+    const earlyPending = pendingChange([createData()], dueAt, 2)
+    const earlyDelivery = requirePending([create, deliveryEvent(earlyPending, 2)])
+    expect(() => foldScheduleEvents([
+      create,
+      userEvent(deliveryMessage(earlyDelivery), 1),
+      deliveryEvent(earlyPending, 2),
+    ])).toThrow(ScheduleLogError)
+    expect(() => foldScheduleEvents([
+      create,
+      pendingEvent,
+      userEvent(freezeMessage({
+        ...message,
+        content: [{ type: 'text', text: 'forged reminder' }],
+      }), 2),
+    ])).toThrow(ScheduleLogError)
+    expect(() => foldScheduleEvents([
+      create,
+      pendingEvent,
+      userEvent(message, 2),
+      userEvent(message, 3),
+    ])).toThrow(ScheduleLogError)
+    expect(() => foldScheduleEvents([
+      create,
+      pendingEvent,
+      userEvent(message, 2),
+      complete,
+      userEvent(message, 4),
+    ])).toThrow(ScheduleLogError)
+  })
+
+  it('upgrades an active v1 Every stream and reconciles a later old-pin dispatch', () => {
+    const created = everyCreateData()
+    const create = scheduleEvent(created, 0)
+    const legacyDispatch = scheduleEvent({
+      version: 1,
+      operation: 'dispatch',
+      id: 'schedule-every',
+      acceptedAt: '2026-08-05T12:17:34.000Z',
+    }, 1)
+    const legacy = foldScheduleEvents([create, legacyDispatch])
+    const decision = resolveScheduleDueDecision(
+      legacy.active,
+      Date.parse('2026-08-05T12:20:00.000Z'),
+    )
+    if (decision.kind === 'wait') throw new Error('expected due migrated Every')
+    const pending = createScheduleDeliveryPendingChange(decision, 2)
+    const pendingEvent = deliveryEvent(pending, 2)
+    const prefix = [create, legacyDispatch, pendingEvent]
+    const delivery = requirePending(prefix)
+    const message = deliveryMessage(delivery)
+    const complete = deliveryEvent({
+      version: 2,
+      operation: 'delivery-complete',
+      deliveryId: delivery.deliveryId,
+      messageId: delivery.messageId,
+    }, 5)
+
+    expect(foldScheduleEvents([
+      ...prefix,
+      scheduleEvent({
+        version: 1,
+        operation: 'dispatch',
+        id: 'schedule-every',
+        acceptedAt: '2026-08-05T12:20:00.000Z',
+      }, 3),
+      userEvent(message, 4),
+      complete,
+      scheduleEvent({
+        version: 1,
+        operation: 'dispatch',
+        id: 'schedule-every',
+        acceptedAt: '2026-08-05T12:25:00.000Z',
+      }, 6),
+    ])).toMatchObject({
+      active: [expect.objectContaining({
+        id: 'schedule-every',
+        scheduledAt: '2026-08-05T12:30:00.000Z',
+      })],
+    })
+  })
+
+  it('reserves the complete ordered Every batch and advances only through v1 changes', () => {
+    const first = everyCreateData('first', 'first', '2026-08-05T12:05:00.000Z')
+    const second = {
+      ...everyCreateData('second', 'second', '2026-08-05T12:10:00.000Z'),
+      schedule: {
+        ...everyCreateData('second', 'second', '2026-08-05T12:10:00.000Z').schedule,
+        everySeconds: 600,
+      },
+    }
+    const pending = pendingChange([first, second], '2026-08-05T12:17:34.000Z', 2)
+    const events = [
+      scheduleEvent(first, 0),
+      scheduleEvent(second, 1),
+      deliveryEvent(pending, 2),
+    ]
+    const admitted = foldScheduleEvents(events)
+    expect(pending.occurrences.map(occurrence => [occurrence.scheduleId, occurrence.occurrenceAt]))
+      .toEqual([
+        ['first', '2026-08-05T12:15:00.000Z'],
+        ['second', '2026-08-05T12:10:00.000Z'],
+      ])
+    expect(admitted.active).toEqual([
+      expect.objectContaining({ id: 'first', scheduledAt: '2026-08-05T12:05:00.000Z' }),
+      expect.objectContaining({ id: 'second', scheduledAt: '2026-08-05T12:10:00.000Z' }),
+    ])
+
+    const delivery = requirePending(events)
+    const afterDelete = [
+      ...events,
+      scheduleEvent({ version: 1, operation: 'delete', id: 'first' }, 3),
+      scheduleEvent({
+        version: 1,
+        operation: 'dispatch',
+        id: 'second',
+        acceptedAt: '2026-08-05T12:17:34.000Z',
+      }, 4),
+      userEvent(deliveryMessage(delivery), 5),
+      deliveryEvent({
+        version: 2,
+        operation: 'delivery-complete',
+        deliveryId: delivery.deliveryId,
+        messageId: delivery.messageId,
+      }, 6),
+    ]
+    expect(foldScheduleEvents(afterDelete)).toEqual({
+      active: [expect.objectContaining({ id: 'second', scheduledAt: '2026-08-05T12:20:00.000Z' })],
+      seenIds: ['first', 'second'],
+    })
+  })
+
+  it('namespaces deterministic delivery identities by the fork-owned pending event seq', () => {
+    const created = createData('same')
+    const parentPending = pendingChange([created], dueAt, 1)
+    const childPending = pendingChange([created], dueAt, 3)
+    const childEvents = [
+      scheduleEvent(created, 0),
+      deliveryEvent(parentPending, 1),
+      scheduleEvent(created, 2),
+      deliveryEvent(childPending, 3),
+    ]
+
+    expect(childPending.occurrences[0]?.occurrenceId)
+      .not.toBe(parentPending.occurrences[0]?.occurrenceId)
+    expect(childPending.deliveryId).not.toBe(parentPending.deliveryId)
+    expect(childPending.messageId).not.toBe(parentPending.messageId)
+    expect(foldScheduleEvents(childEvents, 2).pendingDelivery).toMatchObject({
+      deliverySeq: 3,
+      deliveryId: childPending.deliveryId,
+      messageId: childPending.messageId,
+    })
+  })
+
+  it('replays a pure version-1 stream without adding version-2 state', () => {
+    expect(foldScheduleEvents([
+      scheduleEvent(createData(), 0),
+      scheduleEvent({ version: 1, operation: 'dispatch', id: 'schedule-1' }, 1),
+      scheduleEvent(everyCreateData(), 2),
+      scheduleEvent({
+        version: 1,
+        operation: 'dispatch',
+        id: 'schedule-every',
+        acceptedAt: '2026-08-05T12:17:34.000Z',
+      }, 3),
+    ])).toEqual({
+      active: [expect.objectContaining({
+        id: 'schedule-every',
+        scheduledAt: '2026-08-05T12:20:00.000Z',
+      })],
+      seenIds: ['schedule-1', 'schedule-every'],
+    })
   })
 })
 

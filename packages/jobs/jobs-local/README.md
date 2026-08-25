@@ -8,11 +8,13 @@ Process-local implementation of the [`@deepseek-ai/dsh-jobs`](../jobs/README.md)
 
 `maxConcurrentJobsPerOwner` is a positive safe integer and defaults to `10`. Before invoking a producer, `start()` counts the exact owner's `running` and `stopping` records; all unowned jobs share one separate service bucket. Terminal history does not occupy capacity, and only producer `done` settlement releases a stopping job's place.
 
-At capacity, `start()` fails before producer execution and id allocation with an error that names the limit and tells the model to use `job_kill`, wait for the job to finish stopping, and retry. The registry does not queue, preempt, or maintain a second mutable counter.
+At capacity, `start()` fails before producer execution and id allocation with an error that names the limit and tells the model to use `job_kill`, wait for the job to finish stopping, and retry. This immediate path does not queue, preempt, or maintain a second mutable counter.
+
+`startWhenAvailable()` is a separate opt-in admission path for a producer that needs one started producer of its kind across all owners. It applies the ordinary per-owner live-Job limit first, immediately allocates and publishes a real owner-scoped Job, and returns `{ id, admitted: Promise<void> }`. Waiting records remain publicly `running`, support the native read and cancellation APIs, and have no producer hooks or execution resource until admission. The per-kind FIFO stores only their JobIds; each Job's private `TrackedTask` phase owns the starter and Promise settlement. The FIFO retains at most 64 waiting Jobs, so the 65th waiter fails before id allocation or producer execution. Terminal Job settlement releases the lane. Waiting abort, kill, exact-owner disposal, and service disposal settle the Job as `killed` and reject `admitted`; a synchronous starter throw settles the allocated Job as `failed` and rejects `admitted`. Ordinary `start()` remains synchronous and can bypass this lane, so every producer of a constrained kind must use this method and observe `admitted`.
 
 ## Lifecycle
 
-Jobs belong to their owner and backend, not the producer tool fiber, so producer and controller reloads do not stop them. The first job for an owner attaches one awaited effect to the exact `Agent` scope. Owner disposal cancels that object's jobs, awaits producer quiescence, and removes their snapshots; reused agent or session ids cannot redirect an old cleanup.
+Jobs belong to their owner and backend, not the producer tool fiber, so producer and controller reloads do not stop them. The first Job for an owner attaches one awaited effect to the exact `Agent` scope. Owner disposal terminally cancels that object's waiting Jobs, cancels its started Jobs, settles every admission Promise, awaits producer quiescence, and removes their snapshots; reused agent or session ids cannot redirect an old cleanup.
 
 Service disposal closes listeners, cancels all live jobs, awaits their records, and detaches effects from surviving owner scopes. If teardown cancellation throws, the service force-fails the record and warns that work may be orphaned instead of deadlocking. A cancellation that returns but never settles `done` remains indistinguishable from a slow stop and can stall teardown.
 
@@ -32,3 +34,4 @@ No direct invalidation; the named consumer owns any request-prefix changes.
 
 - **Jobs are process-local** — records die with the harness process; durable or cross-restart execution needs a separate backend implementing the seam.
 - **A silently ineffective cancel can stall teardown and hold capacity** — if `cancel` returns without settling `done`, the registry cannot distinguish it from a slow stop; the job keeps one bucket slot for the rest of the service lifetime, and only an explicit throw can be force-failed safely.
+- **Per-kind FIFO capacity is fixed at one** — no current consumer has measurements justifying a wider native lane. Raising it requires a concrete result and keeps Job records as the only active-count authority.

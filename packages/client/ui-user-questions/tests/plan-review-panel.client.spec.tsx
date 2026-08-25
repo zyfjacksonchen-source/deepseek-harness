@@ -36,6 +36,7 @@ const kit = {
   useProjection: (() => undefined) as never,
   useInput: (() => { throw new Error('unused') }) as never,
   inputActions: { setDraft: () => { throw new Error('unused') }, submit: () => { throw new Error('unused') } } as never,
+  loadImage: vi.fn(() => Promise.reject(new Error('unused'))),
   t: seatOver(zh, commonZh),
 }
 

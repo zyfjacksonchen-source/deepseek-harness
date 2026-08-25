@@ -5,6 +5,8 @@
  * @module @deepseek-ai/dsh-user-questions/types
  */
 
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+
 /** One selectable answer offered to the user. */
 export interface AskUserQuestionOption {
   /** User-facing label. */
@@ -20,16 +22,23 @@ export interface AskUserQuestionOption {
  * not know a tag renders the generic flow, and the answer encoding is identical
  * either way — an intent changes presentation only, never the protocol.
  */
-export type AskUserQuestionIntent = {
-  /** A plan submitted for review: `detail` is the plan markdown `ask()` requires, and the decision approves or declines it. */
-  kind: 'plan-review'
-  /**
-   * The option label that approves the plan; every other option declines it.
-   * Named rather than positional so no UI infers the verdict from option order.
-   * An `approve` naming no option of its own question is rejected at `ask()`.
-   */
-  approve: string
-}
+export type AskUserQuestionIntent =
+  | {
+    /** A plan submitted for review: `detail` is the plan markdown `ask()` requires, and the decision approves or declines it. */
+    kind: 'plan-review'
+    /** The exact option label that approves the plan. */
+    approve: string
+  }
+  | {
+    /** A generated image candidate that must be inspected before semantic acceptance. */
+    kind: 'image-review'
+    /** The exact option label that accepts the candidate. */
+    approve: string
+    /** Session-authorized immutable source images, in request order. */
+    sources: ImageAttachmentRef[]
+    /** Session-authorized immutable candidate output. */
+    output: ImageAttachmentRef
+  }
 
 /** One question in a user-questions request. */
 export interface AskUserQuestionItem {

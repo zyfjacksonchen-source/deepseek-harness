@@ -21,6 +21,7 @@ tools:
 - `ctx.tools.presentAs(mode: ToolPresentationMode): () => void`：为本 agent 选择面向模型的呈现方式，仅对该 agent 遮蔽 `mode` 配置；从普通上下文调用会抛出（进程级呈现方式是那个配置字段），同一 scope 内第二次声明也会抛出。code 类模式还会为该 agent 注册它自己的 `tools:sdk` 段。工具目录保持不变：`schemas(agent)` 仍会报告该 agent 的能力；只有组装结果中的工具列表会按所选呈现方式收束。随调用方 fiber dispose。
 - `ctx.tools.restrict(filter)`：对全局工具应用 agent 作用域的允许／拒绝掩码；从普通上下文调用会抛出。筛选器在注册时创建快照；多个掩码取交集，随后再合并作用域本地工具。拒绝掩码会接纳后来出现且未点名的全局工具，而允许掩码会排除后来出现的名称。未知、本地或保留名称以及空筛选器都会被拒绝。这是实时可见性组合，不是权限边界；参见[作用域安全非目标](../../../.agents/notes/implemented/architecture/2026-07-08-agent-scope-contexts.md#security-and-authority-are-non-goals)。
 - `ctx.tools.get(name: string, scope?: ScopeKey): ToolDefinition | undefined`：返回指定作用域可见的解析结果，其中已应用名称遮蔽；被作用域限制排除的全局工具会被视为不存在。呈现器会传入发起调用的 agent，使卡片与实际执行内容一致。
+- `ctx.tools.provenance(name: string, scope?: ScopeKey): ToolRegistrationProvenance | undefined`：供 host 只读查询当前可见 winner 在注册时冻结的 Loader 身份。它返回 `register()` 从实际调用 fiber 捕获的精确 `fiber.entry.options.name` 模块说明符与 Cordis 插件 fiber 名；没有 Loader entry 的直接注册、未知或被限制的工具以及已 dispose 的注册均返回 `undefined`。作用域遮蔽会使用自身的 winner，绝不会回退到隐藏的全局或祖先注册。该元数据不进入工具 schema、系统提示词或会话协议数据；它标识组合来源，而不代表权限或软件包真实性。
 - `ctx.tools.schemas(scope?: ScopeKey): ToolSchema[]`：返回该作用域可见的所有 schema（不含 `execute` 函数）。已交付工具的 schema 收录在 [docs/tool-catalog.md](../../../docs/tool-catalog.md) 中；该目录通过启动每个工具插件并采集此方法的结果生成（参见[工具 schema 目录 Agent Note](../../../.agents/notes/implemented/process/2026-07-02-tool-schema-catalog.md)）。
 - `ctx.tools.guard(guard: ToolGuard): () => void`：在 `tools/pre-execute` 之后注册单调同步执行守卫：返回理由会拒绝调用，返回 `undefined` 则保持原决定。普通上下文守卫全局生效；`agent.ctx` 守卫只对该 agent 生效。后续 waterfall（瀑布式事件）监听器无法将守卫的拒绝重新变为允许。随调用 fiber dispose。
 - `ctx.tools.execute(exec)`：以无损方式快照并冻结参数，分配不透明 token，运行完整的策略／分发／结果流水线，然后在最终观测前独立快照权威结果。无效参数会进入同一结果路径，但不会到达策略或工具主体。环绕包装层只能替换 `signal`；注册表会在进入工具主体之前，立即将调用方的原始信号重新合并到当前信号中。
@@ -41,6 +42,7 @@ tools:
 ### 关键类型
 
 - `ToolDefinition`：`ToolSchema` + 必填的 `output { schema, render, presentationMeta? }` + `execute(args, exec)`，以及可选的最终内容回调、呈现回调、协作式 `timeoutMs` 和逐调用的 `isConcurrencySafe(args)` 分类器。主体只能返回输出 schema 声明的规范 JSON 值，并通过 `exec.signal` 协作停止。`finalizeContent(exec, result)` 对每个规范化结果都恰好运行一次，包括绕过后置策略的失败，并且只能替换 `content`；它必须是同步且对所有输入都有定义的函数。
+- `ToolRegistrationProvenance`：从 Loader-backed 注册 fiber 复制的只读 `{ moduleSpecifier, pluginName }`。该对象会冻结，因此后续替换或重命名可变 Loader Entry 时不会漂移。
 - `ToolExecutionInput`：调用方提供的调用描述：`{ callId, name, arguments, signal, agent?, parent? }`；`signal` 必填且只读，调用方可以将外层执行的不透明 token 作为 `parent` 传入，但绝不能选择新执行自身的 token。
 - `ToolExecutionToken`：注册表分配的全新带品牌 `Symbol`。它只支持通过相等性进行关联，绝不会跨越模型、日志或 worker 边界。
 - `ToolExecution`：只读流水线视图：不可变的 `{ token, callId, name, arguments, signal, agent?, parent? }`；注册表会另行保留并重新融合调用方的原始信号。`ToolDispatchExecution` 是仅供 `tools/execute` 使用的视图，其必填信号可变，因此包装层可以替换并还原它，但不能删除它。嵌套调用的 `parent` 是 `ToolExecutionToken`，而不是执行对象。

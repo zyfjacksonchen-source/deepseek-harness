@@ -1,14 +1,26 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import { freezeMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import InvariantRegistry, { InvariantError } from '@deepseek-ai/dsh-invariants'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import * as scheduleInvariant from '../src/invariant.ts'
-import { ScheduleId } from '../src/domain.ts'
+import {
+  createScheduleDeliveryPendingChange,
+  foldScheduleEvents,
+  type PendingScheduleDelivery,
+  renderScheduleDeliveryFraming,
+  resolveScheduleDueDecision,
+  ScheduleId,
+} from '../src/domain.ts'
 import type { ScheduleChange } from '../src/types.ts'
 
 function event(data: unknown, seq: number): SessionEvent {
   return { type: 'schedule/change', seq, time: 1, data } as SessionEvent
+}
+
+function deliveryEvent(data: unknown, seq: number): SessionEvent {
+  return { type: 'schedule/delivery', seq, time: 1, data, ignorable: true } as unknown as SessionEvent
 }
 
 function create(id: string): ScheduleChange {
@@ -37,6 +49,15 @@ function createEvery(id: string): ScheduleChange {
       scheduledAt: '2026-08-05T12:05:00.000Z',
     },
   }
+}
+
+function deliveryMessage(delivery: PendingScheduleDelivery): UserMessage {
+  return freezeMessage({
+    id: delivery.messageId,
+    role: 'user',
+    content: [{ type: 'text', text: renderScheduleDeliveryFraming(delivery) }],
+    source: { kind: 'plugin', plugin: 'schedule' },
+  })
 }
 
 async function harness() {
@@ -83,6 +104,53 @@ describe('Schedule package invariant', () => {
       acceptedAt: '2026-08-05T12:17:34.000Z',
     })
     expect(session.events).toHaveLength(2)
+    await ctx.fiber.dispose()
+  })
+
+  it('accepts only the exact reserved user message inside its v2 delivery window', async () => {
+    const { ctx } = await harness()
+    const session = ctx.sessions.create(SessionId('schedule-v2-invariant'))
+    const created = create('schedule-v2')
+    if (created.operation !== 'create') throw new Error('expected create')
+    session.append('schedule/change', created)
+    const decision = resolveScheduleDueDecision(
+      [created.schedule],
+      Date.parse(created.schedule.scheduledAt),
+    )
+    if (decision.kind === 'wait') throw new Error('expected due decision')
+    const pending = createScheduleDeliveryPendingChange(decision, session.seq)
+    const prospective = foldScheduleEvents([
+      ...session.events,
+      deliveryEvent(pending, session.seq),
+    ]).pendingDelivery
+    if (prospective === undefined) throw new Error('expected pending delivery')
+    const message = deliveryMessage(prospective)
+
+    expect(() => session.append('user/message', message, { surfaceOp: 'append' }))
+      .toThrow(InvariantError)
+    expect(session.seq).toBe(1)
+    session.append('schedule/delivery', pending, { ignorable: true })
+    expect(() => session.append('user/message', freezeMessage({
+      ...message,
+      content: [{ type: 'text', text: 'forged reminder' }],
+    }), { surfaceOp: 'append' })).toThrow(InvariantError)
+    expect(session.seq).toBe(2)
+    for (const change of foldScheduleEvents(session.events).pendingDelivery?.managementDispatches ?? []) {
+      session.append('schedule/change', change)
+    }
+    session.append('user/message', message, { surfaceOp: 'append' })
+    expect(() => session.append('user/message', message, { surfaceOp: 'append' }))
+      .toThrow(InvariantError)
+    expect(session.seq).toBe(4)
+    session.append('schedule/delivery', {
+      version: 2,
+      operation: 'delivery-complete',
+      deliveryId: pending.deliveryId,
+      messageId: pending.messageId,
+    }, { ignorable: true })
+    expect(() => session.append('user/message', message, { surfaceOp: 'append' }))
+      .toThrow(InvariantError)
+    expect(session.events).toHaveLength(5)
     await ctx.fiber.dispose()
   })
 

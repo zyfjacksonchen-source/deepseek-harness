@@ -157,6 +157,80 @@ describe('sessions.list cold merge', () => {
     expect(readFrom).not.toHaveBeenCalled()
   })
 
+  it('projects and opens healthy prior-day conversations when one cold neighbor summary fails', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(UserQuestionService)
+    const root = mkdtempSync(join(tmpdir(), 'dsh-cold-crossday-'))
+    const largePath = join(root, 'large.log')
+    writeFileSync(largePath, 'x'.repeat(1025))
+    const priorDay = Date.UTC(2026, 7, 24, 16)
+    const general = header('prior-day-general', priorDay, { cwd: '/profile/e-mate/general' })
+    const project = header('prior-day-project', priorDay + 1, { cwd: '/projects/example' })
+    const corrupt = header('corrupt-neighbor', priorDay + 2, { cwd: '/projects/damaged' })
+    const events = [
+      { type: 'turn/start', seq: 0, time: priorDay, data: { turn: 1 } },
+      { type: 'turn/end', seq: 1, time: priorDay + 1, data: { turn: 1, reason: { kind: 'completed' } } },
+    ] as SessionEvent[]
+    ctx.provide('sessionPersistence', {
+      list: () => Promise.resolve([general, project, corrupt]),
+      locate: (meta: SessionHeader) => {
+        if (meta.id === corrupt.id) throw new Error('simulated corrupt cold summary')
+        return { kind: 'jsonl', path: largePath }
+      },
+      inspect: (id: SessionId) => Promise.resolve({
+        meta: id === general.id ? general : project,
+        events,
+      }),
+    } as never)
+    ctx.provide('sessionProjectionCache', {
+      cachedSnapshot: (meta: SessionHeader) => meta.id === general.id
+        ? { asOfSeq: 1, values: { sessionListMetadata: { blank: false, lastPromptAt: priorDay } } }
+        : undefined,
+    } as never)
+    const api = createApiProxy(ctx, {
+      defaultModelSelection: () => ({ provider: 'p', model: 'm' }),
+      cwd: '/tmp',
+      coldBlankProbeMaxBytes: 1024,
+    })
+
+    const listed = await api.sessions.list(request({}))
+    expect(listed.result.ok).toBe(true)
+    if (!listed.result.ok) throw new Error('unreachable')
+    expect(listed.result.value.items.map(item => [item.sessionId, item.updatedAt])).toEqual([
+      [corrupt.id, corrupt.createdAt],
+      [project.id, project.createdAt],
+      [general.id, general.createdAt],
+    ])
+    for (const sessionId of [general.id, project.id]) {
+      const history = await api.sessions.history(request({ sessionId }))
+      expect(history.result.ok).toBe(true)
+      if (history.result.ok) {
+        expect(history.result.value.events.map(entry => entry.event.type)).toEqual(['turn/start', 'turn/end'])
+      }
+    }
+  })
+
+  it('keeps unrelated cold-summary failures fail-closed for the whole list', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(UserQuestionService)
+    const invalid = header('invalid-summary', 100)
+    Object.defineProperty(invalid, 'createdAt', {
+      get: () => { throw new Error('simulated summary logic failure') },
+    })
+    ctx.provide('sessionPersistence', {
+      list: () => Promise.resolve([header('healthy-neighbor', 200), invalid]),
+      locate: () => undefined,
+    } as never)
+    const api = createApiProxy(ctx, {
+      defaultModelSelection: () => ({ provider: 'p', model: 'm' }),
+      cwd: '/tmp',
+    })
+
+    await expect(api.sessions.list(request({}))).rejects.toThrow('simulated summary logic failure')
+  })
+
   it('replaces a probed cold row with the live Session that attached during the read', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)

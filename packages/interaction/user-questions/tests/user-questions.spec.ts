@@ -219,4 +219,33 @@ describe('UserQuestionService', () => {
     expect(result.answers).toEqual([{ id: 'plain', selected: ['Approve'] }])
     expect(p.seen[0]?.questions[1]?.intent).toEqual(intent)
   })
+
+  it('admits only bounded immutable references for image-review intent', async () => {
+    const ctx = new Context()
+    await ctx.plugin(UserQuestionService)
+    const p = provider('Accept')
+    ctx.userQuestions.registerProvider(p)
+    const source = {
+      attachmentId: `sha256:${'a'.repeat(64)}` as never,
+      mediaType: 'image/png' as const, bytes: 10, width: 20, height: 30,
+    }
+    const output = { ...source, attachmentId: `sha256:${'b'.repeat(64)}` as never }
+    const question = {
+      id: 'image-review', question: 'Accept this edit?', detail: 'Requested edit and structural evidence.',
+      options: [{ label: 'Accept' }, { label: 'Reject' }],
+      intent: { kind: 'image-review' as const, approve: 'Accept', sources: [source], output },
+    }
+
+    await expect(ctx.userQuestions.ask({ questions: [question] })).resolves.toEqual({
+      answers: [{ id: 'image-review', selected: ['Accept'] }],
+    })
+    for (const intent of [
+      { ...question.intent, sources: [] },
+      { ...question.intent, output: { ...output, attachmentId: 'not-a-cas-id' as never } },
+      { ...question.intent, output: { ...output, bytes: 0 } },
+    ]) {
+      await expect(ctx.userQuestions.ask({ questions: [{ ...question, intent }] }))
+        .rejects.toMatchObject({ code: 'BAD_INTENT' })
+    }
+  })
 })

@@ -74,6 +74,7 @@ describe('rpcErrorSchema', () => {
     }).code).toBe('model-unavailable')
     expect(rpcErrorSchema.parse({ code: 'agent-busy', message: 'm', details: { reason: 'r' } }).code).toBe('agent-busy')
     expect(rpcErrorSchema.parse({ code: 'queue-item-not-found', message: 'm', details: { itemId: 'i' } }).code).toBe('queue-item-not-found')
+    expect(rpcErrorSchema.parse({ code: 'queue-item-read-only', message: 'm', details: { itemId: 'i' } }).code).toBe('queue-item-read-only')
     expect(rpcErrorSchema.parse({ code: 'command-error', message: 'm', details: {} }).code).toBe('command-error')
     expect(rpcErrorSchema.parse({ code: 'unknown-command', message: 'm', details: {} }).code).toBe('unknown-command')
     expect(rpcErrorSchema.parse({ code: 'title-invalid', message: 'm', details: { sessionId: 's' } }).code).toBe('title-invalid')
@@ -449,6 +450,7 @@ describe('events frame schemas', () => {
         {
           id: 'm1',
           placement: 'queued',
+          mutable: true,
           message: { id: 'm1', role: 'user', content: [{ type: 'text', text: 'queued prompt' }], source: { kind: 'user', rpcId: 'r9' } },
         },
       ] },
@@ -491,11 +493,26 @@ describe('events frame schemas', () => {
     for (const invalid of [{ kind: 'plan-review' }, { kind: 'poll', approve: 'Approve' }, { approve: 'Approve' }]) {
       expect(() => askUserQuestionItemSchema.parse({ id: 'q', question: 'Q?', intent: invalid })).toThrow()
     }
+    const source = {
+      attachmentId: `sha256:${'a'.repeat(64)}`, mediaType: 'image/png', bytes: 10, width: 20, height: 30,
+    }
+    const imageIntent = {
+      kind: 'image-review', approve: 'Accept', sources: [source],
+      output: { ...source, attachmentId: `sha256:${'b'.repeat(64)}` },
+    }
+    expect(askUserQuestionItemSchema.parse({
+      id: 'image-review', question: 'Accept?', detail: 'Evidence',
+      options: [{ label: 'Accept' }], intent: imageIntent,
+    }).intent).toEqual(imageIntent)
+    for (const invalid of [
+      { ...imageIntent, sources: [] },
+      { ...imageIntent, output: { ...imageIntent.output, attachmentId: 'bad' } },
+    ]) expect(() => askUserQuestionItemSchema.parse({ id: 'q', question: 'Q?', intent: invalid })).toThrow()
   })
 
   it('accepts every queue placement and rejects unknown placements', () => {
     const item = (placement: string) => ({ type: 'session/queue', sessionId: 's', items: [{
-      id: 'm', placement,
+      id: 'm', placement, mutable: true,
       message: { id: 'm', role: 'user', content: [], source: { kind: 'user' } },
     }] })
     for (const placement of ['queued', 'steering', 'context']) {

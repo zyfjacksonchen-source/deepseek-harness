@@ -6,7 +6,11 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { InvariantFailure, InvariantInstaller } from '@deepseek-ai/dsh-invariants'
-import { foldScheduleEvents, ScheduleLogError } from './domain.ts'
+import {
+  foldScheduleEvents,
+  isScheduleDeliveryMessageId,
+  ScheduleLogError,
+} from './domain.ts'
 
 const PACKAGE_NAME = '@deepseek-ai/dsh-schedule'
 
@@ -38,7 +42,8 @@ const install: InvariantInstaller = Object.assign((ctx: Context, fail: Invariant
   ctx.on('internal/dispatch', (_mode, eventName, args) => {
     if (eventName !== 'session/event') return
     const [session, event] = args as [Session, SessionEvent]
-    if (event.type !== 'schedule/change') return
+    if (event.type !== 'schedule/change' && event.type !== 'schedule/delivery'
+      && !(event.type === 'user/message' && isScheduleDeliveryMessageId(event.data.id))) return
     validate([...session.events, event], session.header.seedLength ?? 0, fail)
   }, { global: true })
 }, { inject: ['sessions'] })

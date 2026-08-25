@@ -731,13 +731,19 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
   {
     key: 'jobs',
     summary: 'Abstract background job registry.',
-    description: 'Abstract background job registry. Subclass, implement the abstract methods, and load the subclass as a plugin — it registers as `ctx.jobs` (one implementation per context; loading a second throws, which is cordis\' standard duplicate-service behavior).\n\nImplementations must honor these semantics:\n\n- Registrations outlive producer and controller fibers. Owner and service disposal cancel live work and await compliant producers; a throwing teardown cancel force-fails only the record. Teardown cancellation also marks the record reported, because a record its owner is being destroyed for has no reader left.\n- Owned-job access is fenced by the owner\'s session id. Ids are predictable, so authorization — not secrecy — is the boundary.\n- Settlement is first-wins: one terminal record, released waiters, and one round of contained listener notification, even against a late producer outcome. Completion is announced last, after the record is committed and every other observer of the settlement has seen it, because a reporter may open a model turn synchronously.\n- start refuses work while no attached job controller serves the spec\'s owner, so a producer cannot start work that owner cannot collect or stop. One registry serves every composition in the process, so this question — and completion-listener delivery — is owner-relative rather than process-wide: registrations made from an unscoped context serve every owner, and registrations made under an agent composition\'s scope serve exactly the agents composed under it.',
+    description: 'Abstract background job registry. Subclass, implement the abstract methods, and load the subclass as a plugin — it registers as `ctx.jobs` (one implementation per context; loading a second throws, which is cordis\' standard duplicate-service behavior).\n\nImplementations must honor these semantics:\n\n- Registrations outlive producer and controller fibers. Owner and service disposal cancel live work and await compliant producers; a throwing teardown cancel force-fails only the record. Teardown cancellation also marks the record reported, because a record its owner is being destroyed for has no reader left.\n- Owned-job access is fenced by the owner\'s session id. Ids are predictable, so authorization — not secrecy — is the boundary.\n- Settlement is first-wins: one terminal record, released waiters, and one round of contained listener notification, even against a late producer outcome. Completion is announced last, after the record is committed and every other observer of the settlement has seen it, because a reporter may open a model turn synchronously.\n- start refuses work while no attached job controller serves the spec\'s owner, so a producer cannot start work that owner cannot collect or stop. One registry serves every composition in the process, so this question — and completion-listener delivery — is owner-relative rather than process-wide: registrations made from an unscoped context serve every owner, and registrations made under an agent composition\'s scope serve exactly the agents composed under it.\n- startWhenAvailable immediately registers a real Job, then uses an opt-in process-wide FIFO to delay only producer execution for kinds that require one active producer across owners. Waiting Jobs use the ordinary owner access, cancellation, and teardown lifecycle. Terminal Job settlement releases the lane; ordinary start remains synchronous and unqueued. Implementations reject a kind\'s 65th waiter before id allocation or producer execution.',
     methods: [
       {
         signature: 'abstract start(spec: JobStart): JobId',
         description: 'Preflight access, validation, owner cleanup, and implementation-owned admission before starting and atomically registering work. Any preflight rejection leaves no job id or execution resource. A throwing starter leaves nothing registered; after it returns, registration cannot fail. Settlement records the outcome, notifies listeners, and releases waiters.',
         parameters: [{ name: 'spec', description: 'job identity, owner, and synchronous starter.' }],
         returns: 'the registry-issued `<kind>-N` id.',
+      },
+      {
+        signature: 'abstract startWhenAvailable(spec: JobStart, signal?: AbortSignal): JobAdmission',
+        description: 'Register a Job immediately, then wait in FIFO order until no started Job of the same kind remains before invoking `spec.run()`. The wait is process-wide across owners, but the Job keeps `spec.owner` for native access, cancellation, and cleanup while waiting.\n\nThis is an opt-in admission path: ordinary start stays immediate and does not join the queue. The ordinary per-owner limit includes waiting Jobs and is checked before the fixed 64-waiter per-kind limit. A waiting abort, kill, owner disposal, or service disposal settles the Job as `killed` without invoking `run()` and rejects `admitted`; a synchronous starter throw settles the already registered Job as `failed` and also rejects `admitted`. Authoritative terminal Job settlement releases the lane. Settlement remains first-wins.',
+        parameters: [{ name: 'spec', description: 'job identity, owner, and synchronous starter.' }, { name: 'signal', description: 'optional cancellation while waiting for admission.' }],
+        returns: 'the registered id and producer-start admission Promise.',
       },
       {
         signature: 'abstract list(caller?: Agent): JobSnapshot[]',
@@ -1926,6 +1932,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the definition the scope resolves, or undefined when none is visible.',
       },
       {
+        signature: 'provenance(name: string, scope?: ScopeKey): ToolRegistrationProvenance | undefined',
+        description: 'Read the Loader identity captured by the tool registration currently visible to one scope. Scoped shadows and restrictions use the same winner as get; direct registrations without a Loader entry are intentionally unattributed, and never fall back to a hidden registration.',
+        parameters: [{ name: 'name', description: 'the tool name as registered.' }, { name: 'scope', description: 'the viewing scope (the agent); omitted = the global view.' }],
+        returns: 'the visible winner\'s frozen registration identity, or undefined.',
+      },
+      {
         signature: 'schemas(scope?: ScopeKey): ToolSchema[]',
         description: 'Project visible definitions onto the allowlisted model-facing schema fields, excluding execution and presentation callbacks.',
         parameters: [{ name: 'scope', description: 'the viewing scope (the agent); omitted = the global view.' }],
@@ -2681,7 +2693,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'AskUserQuestionIntent',
-    declaration: 'export type AskUserQuestionIntent = {\n    kind: \'plan-review\';\n    approve: string;\n};',
+    declaration: 'export type AskUserQuestionIntent = {\n    kind: \'plan-review\';\n    approve: string;\n} | {\n    kind: \'image-review\';\n    approve: string;\n    sources: ImageAttachmentRef[];\n    output: ImageAttachmentRef;\n};',
   },
   {
     name: 'AskUserQuestionItem',
@@ -3186,6 +3198,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'InvokeRemoteRequest',
     declaration: 'export interface InvokeRemoteRequest {\n    readonly namespace: string;\n    readonly method: string;\n    readonly args: Readonly<Record<string, unknown>>;\n    readonly signal?: AbortSignal;\n}',
+  },
+  {
+    name: 'JobAdmission',
+    declaration: 'export interface JobAdmission {\n    id: JobId;\n    admitted: Promise<void>;\n}',
   },
   {
     name: 'JobDoneListener',
@@ -4424,6 +4440,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface ToolProviderResult {\n    readonly schemas: readonly ToolSchema[];\n    readonly knownNames?: readonly string[];\n}',
   },
   {
+    name: 'ToolRegistrationProvenance',
+    declaration: 'export interface ToolRegistrationProvenance {\n    readonly moduleSpecifier: string;\n    readonly pluginName: string;\n}',
+  },
+  {
     name: 'ToolRestriction',
     declaration: 'export interface ToolRestriction {\n    readonly allow?: readonly string[];\n    readonly deny?: readonly string[];\n}',
   },
@@ -4449,7 +4469,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolRuntime',
-    declaration: 'export class ToolRuntime extends Service {\n    static inject;\n    static Config: z<Config>;\n    readonly [TOOL_RUNTIME_SCHEDULER]: ToolRuntimeScheduler;\n    constructor(ctx: Context, config: Config = {});\n    presentAs(mode: ToolPresentationMode): () => void;\n    register(definition: ToolDefinition): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    guard(guard: ToolGuard): () => void;\n    get(name: string, scope?: ScopeKey): ToolDefinition | undefined;\n    schemas(scope?: ScopeKey): ToolSchema[];\n    executionMode(exec: ToolExecutionInput): ToolExecutionMode;\n    async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>;\n}',
+    declaration: 'export class ToolRuntime extends Service {\n    static inject;\n    static Config: z<Config>;\n    readonly [TOOL_RUNTIME_SCHEDULER]: ToolRuntimeScheduler;\n    constructor(ctx: Context, config: Config = {});\n    presentAs(mode: ToolPresentationMode): () => void;\n    register(definition: ToolDefinition): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    guard(guard: ToolGuard): () => void;\n    get(name: string, scope?: ScopeKey): ToolDefinition | undefined;\n    provenance(name: string, scope?: ScopeKey): ToolRegistrationProvenance | undefined;\n    schemas(scope?: ScopeKey): ToolSchema[];\n    executionMode(exec: ToolExecutionInput): ToolExecutionMode;\n    async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>;\n}',
   },
   {
     name: 'ToolRuntimeScheduler',

@@ -230,6 +230,7 @@ export function gatesForMode(selected: Mode): Gate[] {
         pnpmScript('build', 'build'),
         pnpmScript('build:web', 'build:web'),
         ...hygieneLeafGates({ artifactNeeds: ['build'] }),
+        scheduleDowngradeGate(['built-package-invariants']),
         ...docSyncLeafGates({
           docTypecheckNeeds: ['build'],
           docTypecheckEnv: { DSH_DOC_TYPECHECK_USE_BUILD_OUTPUT: '1' },
@@ -409,8 +410,22 @@ function ciConsumerGates(): Gate[] {
       label: 'node-next types',
       needs: validatedBuild,
     }),
+    scheduleDowngradeGate(validatedBuild),
     builtBinSmokeGate(validatedBuild),
   ]
+}
+
+/** Run the exact-old/current Schedule gate without re-entering pnpm. */
+function scheduleDowngradeGate(needs: string[]): Gate {
+  const script = resolve(root, 'scripts/verify-schedule-downgrade.ts')
+  return {
+    id: 'schedule-downgrade',
+    label: 'Schedule exact-old downgrade',
+    displayCommand: `node --import tsx ${script} --candidate-built`,
+    command: process.execPath,
+    args: ['--import', import.meta.resolve('tsx'), script, '--candidate-built'],
+    needs,
+  }
 }
 
 function webSnapshotGate(needs: string[]): Gate {

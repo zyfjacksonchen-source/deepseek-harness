@@ -35,6 +35,8 @@ const liveConfig = join(testsDir, '..', 'cordis.yml')
 const replayConfig = join(testsDir, '..', 'cordis.snapshot.yml')
 const minimalLiveConfig = join(testsDir, '..', 'minimal.cordis.yml')
 const minimalReplayConfig = join(testsDir, '..', 'minimal.snapshot.cordis.yml')
+const scheduleLiveConfig = join(testsDir, '..', 'schedule-delivery.cordis.yml')
+const scheduleReplayConfig = join(testsDir, '..', 'schedule-delivery.snapshot.cordis.yml')
 const runtimeBin = fileURLToPath(new URL('../../../packages/examples/jsonrpc-demo/src/bin.ts', import.meta.url))
 const repoTsconfig = fileURLToPath(new URL('../../../tsconfig.json', import.meta.url))
 
@@ -65,6 +67,8 @@ interface SdkScenario {
   sessionId: string
   /** How many child sessions the turn persists (subagent scenarios). */
   children: number
+  /** Session event types that must reach the SDK-owned interval. */
+  expectedEventTypes?: readonly string[]
   /** Optional scenario-specific live and replay compositions. */
   configs?: { live: string; replay: string }
   /** Environment overrides passed to the runtime subprocess. */
@@ -87,6 +91,8 @@ const SCENARIOS: SdkScenario[] = [
     prompt: 'Reply with exactly: SDK snapshot OK',
     sessionId: 'sdk-snapshot-text',
     children: 0,
+    configs: { live: scheduleLiveConfig, replay: scheduleReplayConfig },
+    expectedEventTypes: ['schedule/delivery'],
   },
   {
     name: 'bash-tool',
@@ -426,6 +432,9 @@ describe('TypeScript SDK snapshots over the jsonrpc runtime', () => {
         method: 'session.status',
         params: { status: 'idle' },
       })
+      for (const type of scenario.expectedEventTypes ?? []) {
+        expect(result.events.some(event => event.type === type)).toBe(true)
+      }
       expect(observedFiles).toEqual(scenario.expectedFiles ?? {})
       if (scenario.expectedTools !== undefined) {
         const parent = ordered[0]

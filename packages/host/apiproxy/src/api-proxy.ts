@@ -547,7 +547,14 @@ async function probeColdSessionMetadata(
 ): Promise<SessionListMetadata | undefined> {
   if (maxBytes === 0) return undefined
   signal?.throwIfAborted()
-  const location = persistence.locate(meta)
+  let location: ReturnType<SessionPersistence['locate']>
+  try {
+    location = persistence.locate(meta)
+  } catch {
+    signal?.throwIfAborted()
+    ctx.logger.warn('session.list: one cold blank-probe location failed (serving it as visible)')
+    return undefined
+  }
   if (location === undefined) return undefined
   signal?.throwIfAborted()
   let size: number
@@ -1304,9 +1311,15 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         : messages
     }
     return [
-      ...project('next-turn').map(message => ({ id: message.id, placement: 'queued' as const, message })),
+      ...project('next-turn').map(message => ({
+        id: message.id,
+        mutable: message.source.kind === 'user',
+        placement: 'queued' as const,
+        message,
+      })),
       ...project('next-step').map(message => ({
         id: message.id,
+        mutable: message.source.kind === 'user',
         // Only user-origin messages are steering; injected context (approval
         // notices, task completion, attached snapshots) is not a user action
         // and must not render as a pending steering bubble.
@@ -2536,6 +2549,13 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
           return Promise.resolve(err(request, {
             code: 'queue-item-not-found',
             message: 'queued item is no longer pending',
+            details: { itemId },
+          }))
+        }
+        if (message.source.kind !== 'user') {
+          return Promise.resolve(err(request, {
+            code: 'queue-item-read-only',
+            message: 'queued item is owned by its producing service',
             details: { itemId },
           }))
         }

@@ -154,6 +154,7 @@ describe('InputHub queue steering (empty-draft accelerated Enter)', () => {
     content: [{ type: 'text', text: id }],
     preview: id,
     text: id,
+    mutable: true,
   })
 
   it('steers every queued row in FIFO order and leaves steering rows alone', async () => {
@@ -168,6 +169,18 @@ describe('InputHub queue steering (empty-draft accelerated Enter)', () => {
     expect(b.updateQueue).toHaveBeenNthCalledWith(1, 'q-1', { kind: 'steer' })
     expect(b.updateQueue).toHaveBeenNthCalledWith(2, 'q-3', { kind: 'steer' })
     expect(b.shell.notices.getSnapshot()).toBeNull()
+    await b.runtime.dispose()
+  })
+
+  it('leaves read-only queued rows out of steer-all', async () => {
+    const b = await bench()
+    await b.runtime.sessions.updateSnapshot('s1', (draft) => {
+      draft.queue = [row('q-1'), { ...row('schedule-reserved'), mutable: false }, row('q-2')]
+    })
+    b.shell.steerQueue()
+    await vi.waitFor(() => { expect(b.updateQueue).toHaveBeenCalledTimes(2) })
+    expect(b.updateQueue).toHaveBeenNthCalledWith(1, 'q-1', { kind: 'steer' })
+    expect(b.updateQueue).toHaveBeenNthCalledWith(2, 'q-2', { kind: 'steer' })
     await b.runtime.dispose()
   })
 

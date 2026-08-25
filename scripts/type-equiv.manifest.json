@@ -288,6 +288,26 @@
     },
     {
       "doc": "docs/subsystems/schedule.md",
+      "symbol": "ScheduleDeliveryOccurrence",
+      "source": "packages/schedule/schedule/src/types.ts"
+    },
+    {
+      "doc": "docs/subsystems/schedule.md",
+      "symbol": "ScheduleDeliveryPendingChange",
+      "source": "packages/schedule/schedule/src/types.ts"
+    },
+    {
+      "doc": "docs/subsystems/schedule.md",
+      "symbol": "ScheduleDeliveryCompleteChange",
+      "source": "packages/schedule/schedule/src/types.ts"
+    },
+    {
+      "doc": "docs/subsystems/schedule.md",
+      "symbol": "ScheduleDeliveryChange",
+      "source": "packages/schedule/schedule/src/types.ts"
+    },
+    {
+      "doc": "docs/subsystems/schedule.md",
       "symbol": "ScheduleState",
       "source": "packages/schedule/schedule/src/types.ts"
     },
@@ -692,6 +712,11 @@
     },
     {
       "doc": "docs/subsystems/tools.md",
+      "symbol": "ToolRegistrationProvenance",
+      "source": "packages/core/tools/src/index.ts"
+    },
+    {
+      "doc": "docs/subsystems/tools.md",
       "symbol": "ValueSchemaSpec",
       "source": "packages/core/tools/src/schema.ts"
     },
@@ -933,6 +958,11 @@
     {
       "doc": "docs/subsystems/jobs.md",
       "symbol": "JobStart",
+      "source": "packages/jobs/jobs/src/types.ts"
+    },
+    {
+      "doc": "docs/subsystems/jobs.md",
+      "symbol": "JobAdmission",
       "source": "packages/jobs/jobs/src/types.ts"
     },
     {

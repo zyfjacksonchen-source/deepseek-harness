@@ -116,6 +116,20 @@ CUSTOM_CORDIS = """\
 - id: cordis-tool
   name: '@deepseek-ai/dsh-tool-cordis'
 """
+SCHEDULE_DELIVERY_FIXTURE = (
+    Path(__file__).resolve().parent.parent
+    / "examples" / "jsonrpc-agent" / "tests" / "fixtures" / "schedule-delivery-seed.ts"
+)
+
+
+def snapshot_cordis() -> str:
+    """Add the shared SessionEventMap fixture only to the expected-output scenario."""
+    return CUSTOM_CORDIS + f"""\
+- id: schedule-delivery-seed
+  name: {json.dumps(str(SCHEDULE_DELIVERY_FIXTURE))}
+"""
+
+
 class MockModelHandler(BaseHTTPRequestHandler):
     """Return deterministic text, worker, and orchestration completions."""
 
@@ -602,7 +616,7 @@ def smoke_sdk_snapshot(base_url: str, executable: Path, update_snapshots: bool) 
         root = Path(temporary).resolve()
         sessions = root / "sessions"
         cordis = root / "cordis.yml"
-        cordis.write_text(CUSTOM_CORDIS)
+        cordis.write_text(snapshot_cordis())
         with DeepSeekHarness(
             provider="deepseek-official",
             model="smoke-model",
@@ -622,6 +636,8 @@ def smoke_sdk_snapshot(base_url: str, executable: Path, update_snapshots: bool) 
             raise AssertionError(f"advanced snapshot emitted unexpected subagent lifecycle: {methods}")
         if not any(event.get("type") == "tool/code-dispatch" for event in result.events):
             raise AssertionError("advanced snapshot emitted no tool/code-dispatch event")
+        if not any(event.get("type") == "schedule/delivery" for event in result.events):
+            raise AssertionError("advanced snapshot emitted no schedule/delivery event")
 
         logs = read_session_logs(sessions)
         child_ids = snapshot_child_ids(result)

@@ -6,8 +6,10 @@ Schedule 家族负责管理提醒，其持久状态保存在原 Session 日志�
 
 | 包 | 职责 | ctx 键 |
 |---|---|---|
-| `schedule/` | 版本化 Schedule 事件与 fold、面向模型的创建／列出／删除工具，以及 live 根 Agent timer owner | 无 |
+| `schedule/` | 版本化 Schedule 事件与 fold、面向模型的创建／列出／删除工具，以及 live 根 Agent timer owner | 可选 `ctx.scheduleDeliveryAdmission` 输入 |
 
-本包有意不公开 Schedule service 或可变数据库。工具与 runtime 向 Session stream 追加事件；到期工作通过 Agent 的普通 follow-up 队列进入同一对话。
+本包有意不公开 Schedule 管理 service 或可变数据库。launcher 可以在发布根 Agent 前提供可选的进程内准入 controller；本包绝不会将其持久化。工具与 runtime 向 Session stream 追加事件；到期工作通过 Agent 的普通 follow-up 队列进入同一对话。
+
+版本 1 的 `schedule/change` 仍是完整的管理与活动状态权威。版本 2 的 `schedule/delivery` 是同一 Session stream 中可忽略的辅助 outbox 记录：pending 与完整 v1 dispatch 批次会在队列准入前完成检查点，只有确切 user message 持久化后才会为 complete 建立检查点。当前 Host 会把 Schedule 队列项公开为 producer-owned，并拒绝公共 edit、steer 或 cancel 操作。回滚准入采用 fail-closed：updater 在 quiesce 与 flush 后，通过 `ctx.sessionPersistence.list()` 加 `inspect()` 枚举，并要求每个 `foldScheduleEvents(...).pendingDelivery` 都不存在，之后才能选择旧 pin。
 
 有关持久记录、转换、视图与交付约定，请参阅[仅限 Session 内的 Schedule](../../docs/subsystems/schedule.md)。

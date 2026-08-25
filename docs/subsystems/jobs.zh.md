@@ -23,13 +23,14 @@ interface JobKindMap {
 
 ## 生产方约定
 
-`JobStart` 声明身份和启动器。运行时会在调用 `run()` 前完成预检，随后提交注册，不再执行可能失败的步骤。生产方拥有执行资源；运行时拥有身份、访问权限和生命周期状态。
+`JobStart` 声明身份和启动器。普通 `start()` 会在调用 `run()` 前完成预检，并且只在启动器成功后注册。`startWhenAvailable()` 会先注册且只延迟 `run()`；其 `JobAdmission` 将立即可用的 id 与生产方启动时机分开。生产方拥有执行资源；运行时拥有身份、访问权限和生命周期状态。
 
 ```ts type-equiv
 /**
- * Producer declaration passed to {@link JobRegistry.start}. The runtime
- * preflights access and cleanup before invoking {@link run}; the producer owns
- * execution resources while the runtime owns identity and lifecycle state.
+ * Producer declaration passed to a {@link JobRegistry} start method. The
+ * runtime preflights access and cleanup before invoking {@link run}; the
+ * producer owns execution resources while the runtime owns identity and
+ * lifecycle state.
  */
 interface JobStart {
   /** Producer kind — also the id prefix (`bash`, `subagent`, …). */
@@ -50,10 +51,27 @@ interface JobStart {
   owner?: Agent
   /**
    * Start the work after preflight and synchronously return its hooks. Called
-   * once; a throw leaves nothing registered, and the producer must clean up any
-   * partially started resources.
+   * once. A throw from {@link JobRegistry.start} leaves nothing registered; a
+   * throw after queued admission fails that registered Job. The producer must
+   * clean up any partially started resources.
    */
   run(): JobHooks
+}
+```
+
+`JobAdmission.id` 可以立即通过原生 Job API 使用。`admitted` 会在 `run()` 返回且钩子安装完成后 resolve，而不是在生产方完成后 resolve；启动前的取消或 teardown 以及同步启动器抛错会先把已注册 Job 结算到终态，再 reject 该 Promise。
+
+```ts type-equiv
+/** Handle returned once queued admission has registered its Job. */
+interface JobAdmission {
+  /** The immediately registered Job id. */
+  id: JobId
+  /**
+   * Resolves after the producer starter returns and its hooks are installed;
+   * it does not await producer completion. Rejects when cancellation or
+   * teardown settles the Job before producer start, or when the starter throws.
+   */
+  admitted: Promise<void>
 }
 ```
 
@@ -154,7 +172,7 @@ interface JobRead {
 
 ## 服务行为
 
-抽象的 [`JobRegistry`](../../packages/jobs/jobs/src/index.ts) Service Definition 规定原子 `start`、限定调用方作用域的 `get` 和 `list`、`read`、`kill`、有界 `wait`、故障隔离的 `onJobDone` 与 `onJobsChanged` 监听器，以及 `attachController` 何时可用；[`LocalJobRegistry`](../../packages/jobs/jobs-local/src/index.ts) 是其进程局部 Service Provider。授权会比较拥有者会话；拥有者清理与准入会使用确切的已注册 `Agent` 实例。本地 Service Provider 的 `maxConcurrentJobsPerOwner` 配置必须是正的安全整数，默认值为 `10`；它按确切 owner 统计 `running` 与 `stopping` 记录，所有无 owner 任务共享一个服务级桶，并在生产方终止结算后释放容量。Service Definition 约定见 [`dsh-jobs`](../../packages/jobs/jobs/README.md)，注册表生命周期与准入策略见 [`dsh-jobs-local`](../../packages/jobs/jobs-local/README.md)，面向模型的 Consumer 见 [`dsh-tool-jobs`](../../packages/jobs/tool-jobs/README.md)。
+抽象的 [`JobRegistry`](../../packages/jobs/jobs/src/index.ts) Service Definition 规定原子 `start`、显式选择的 `startWhenAvailable`、限定调用方作用域的 `get` 和 `list`、`read`、`kill`、有界 `wait`、故障隔离的 `onJobDone` 与 `onJobsChanged` 监听器，以及 `attachController` 何时可用；[`LocalJobRegistry`](../../packages/jobs/jobs-local/src/index.ts) 是其进程局部 Service Provider。授权会比较拥有者会话；拥有者清理与准入会使用确切的已注册 `Agent` 实例。本地 Service Provider 的 `maxConcurrentJobsPerOwner` 配置必须是正的安全整数，默认值为 `10`；它按确切 owner 统计每条等待、`running` 或 `stopping` 记录，所有无 owner Job 共享一个服务级桶。进程级每 kind FIFO 可以在 1 个已启动 Job 后延迟生产方启动；它最多保留 64 个等待 JobId，并且只由 Job 终态结算释放 lane。Service Definition 约定见 [`dsh-jobs`](../../packages/jobs/jobs/README.md)，注册表生命周期与准入策略见 [`dsh-jobs-local`](../../packages/jobs/jobs-local/README.md)，面向模型的 Consumer 见 [`dsh-tool-jobs`](../../packages/jobs/tool-jobs/README.md)。
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
@@ -176,6 +194,7 @@ Implementations must honor these semantics:
 - Owned-job access is fenced by the owner's session id. Ids are predictable, so authorization — not secrecy — is the boundary.
 - Settlement is first-wins: one terminal record, released waiters, and one round of contained listener notification, even against a late producer outcome. Completion is announced last, after the record is committed and every other observer of the settlement has seen it, because a reporter may open a model turn synchronously.
 - start refuses work while no attached job controller serves the spec's owner, so a producer cannot start work that owner cannot collect or stop. One registry serves every composition in the process, so this question — and completion-listener delivery — is owner-relative rather than process-wide: registrations made from an unscoped context serve every owner, and registrations made under an agent composition's scope serve exactly the agents composed under it.
+- startWhenAvailable immediately registers a real Job, then uses an opt-in process-wide FIFO to delay only producer execution for kinds that require one active producer across owners. Waiting Jobs use the ordinary owner access, cancellation, and teardown lifecycle. Terminal Job settlement releases the lane; ordinary start remains synchronous and unqueued. Implementations reject a kind's 65th waiter before id allocation or producer execution.
 
 ```ts cordis-catalog
 /**
@@ -188,6 +207,26 @@ Implementations must honor these semantics:
  * @returns the registry-issued `<kind>-N` id.
  */
 abstract start(spec: JobStart): JobId
+
+/**
+ * Register a Job immediately, then wait in FIFO order until no started Job of
+ * the same kind remains before invoking `spec.run()`. The wait is
+ * process-wide across owners, but the Job keeps `spec.owner` for native
+ * access, cancellation, and cleanup while waiting.
+ *
+ * This is an opt-in admission path: ordinary {@link start} stays immediate
+ * and does not join the queue. The ordinary per-owner limit includes waiting
+ * Jobs and is checked before the fixed 64-waiter per-kind limit. A waiting
+ * abort, kill, owner disposal, or service disposal settles the Job as
+ * `killed` without invoking `run()` and rejects `admitted`; a synchronous
+ * starter throw settles the already registered Job as `failed` and also
+ * rejects `admitted`. Authoritative terminal Job settlement releases the
+ * lane. Settlement remains first-wins.
+ * @param spec - job identity, owner, and synchronous starter.
+ * @param signal - optional cancellation while waiting for admission.
+ * @returns the registered id and producer-start admission Promise.
+ */
+abstract startWhenAvailable(spec: JobStart, signal?: AbortSignal): JobAdmission
 
 /**
  * List caller-owned and unowned jobs in registration order without exposing
@@ -286,5 +325,5 @@ abstract attachController(name: string): () => void
 
 Types: [Agent](core.md)
 
-Source: [`packages/jobs/jobs/src/index.ts:62`](../../packages/jobs/jobs/src/index.ts)
+Source: [`packages/jobs/jobs/src/index.ts:70`](../../packages/jobs/jobs/src/index.ts)
 <!-- END GENERATED cordis-surface -->

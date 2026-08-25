@@ -46,8 +46,54 @@
       }
     },
     {
-      "type": "step/start",
+      "type": "schedule/change",
       "seq": 3,
+      "time": 0,
+      "data": {
+        "version": 1,
+        "operation": "create",
+        "schedule": {
+          "id": "sdk-snapshot-schedule",
+          "kind": "after",
+          "prompt": "SDK snapshot Schedule delivery",
+          "afterSeconds": 1,
+          "scheduledAt": "2026-08-05T12:00:00.000Z"
+        }
+      }
+    },
+    {
+      "type": "schedule/delivery",
+      "seq": 4,
+      "time": 0,
+      "data": {
+        "version": 2,
+        "operation": "delivery-pending",
+        "deliveryId": "schedule-delivery-v2-f4oeBVbbKnlc-nTkgrbOHhKk5Dg6H7V0EOPj05NyuOE",
+        "messageId": "schedule-message-v2-BSVeA921vpkJrpcc6F0HeibK9YjTybd-cx4rQfuIl3c",
+        "acceptedAt": "2026-08-05T12:00:00.000Z",
+        "occurrences": [
+          {
+            "occurrenceId": "schedule-occurrence-v2-RPGgRGR3TuYfX9X3CocdmvCnhOhjP9ewzIDZUvZd1Fs",
+            "scheduleId": "sdk-snapshot-schedule",
+            "occurrenceAt": "2026-08-05T12:00:00.000Z"
+          }
+        ]
+      },
+      "ignorable": true
+    },
+    {
+      "type": "schedule/change",
+      "seq": 5,
+      "time": 0,
+      "data": {
+        "version": 1,
+        "operation": "dispatch",
+        "id": "sdk-snapshot-schedule"
+      }
+    },
+    {
+      "type": "step/start",
+      "seq": 6,
       "time": 0,
       "data": {
         "turn": 1,
@@ -56,7 +102,7 @@
     },
     {
       "type": "user/message",
-      "seq": 4,
+      "seq": 7,
       "time": 0,
       "data": {
         "content": [
@@ -75,12 +121,12 @@
     },
     {
       "type": "session/title",
-      "seq": 5,
+      "seq": 8,
       "time": 0,
       "data": {
         "title": "Run the advanced packaged-runtime snapsh",
         "messageSeqs": [
-          4
+          7
         ],
         "source": {
           "kind": "fallback"
@@ -89,7 +135,7 @@
     },
     {
       "type": "request/header",
-      "seq": 6,
+      "seq": 9,
       "time": 0,
       "data": {
         "header": {
@@ -125,7 +171,7 @@
     },
     {
       "type": "request/context",
-      "seq": 7,
+      "seq": 10,
       "time": 0,
       "data": {
         "provider": "deepseek-official",
@@ -135,7 +181,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 8,
+      "seq": 11,
       "time": 0,
       "data": {
         "turn": 1,
@@ -149,7 +195,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 9,
+      "seq": 12,
       "time": 0,
       "data": {
         "turn": 1,
@@ -165,7 +211,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 10,
+      "seq": 13,
       "time": 0,
       "data": {
         "turn": 1,
@@ -184,7 +230,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 11,
+      "seq": 14,
       "time": 0,
       "data": {
         "turn": 1,
@@ -200,7 +246,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 12,
+      "seq": 15,
       "time": 0,
       "data": {
         "turn": 1,
@@ -215,7 +261,7 @@
     },
     {
       "type": "assistant/message",
-      "seq": 13,
+      "seq": 16,
       "time": 0,
       "data": {
         "turn": 1,
@@ -243,17 +289,17 @@
         }
       },
       "sourceEventSeqs": [
-        8,
-        9,
-        10,
         11,
-        12
+        12,
+        13,
+        14,
+        15
       ],
       "surfaceOp": "append"
     },
     {
       "type": "tool/call",
-      "seq": 14,
+      "seq": 17,
       "time": 0,
       "data": {
         "turn": 1,
@@ -265,7 +311,7 @@
     },
     {
       "type": "tool/result",
-      "seq": 15,
+      "seq": 18,
       "time": 0,
       "data": {
         "turn": 1,
@@ -297,13 +343,13 @@
         }
       },
       "sourceEventSeqs": [
-        14
+        17
       ],
       "surfaceOp": "append"
     },
     {
       "type": "step/end",
-      "seq": 16,
+      "seq": 19,
       "time": 0,
       "data": {
         "turn": 1,
@@ -312,7 +358,7 @@
     },
     {
       "type": "step/start",
-      "seq": 17,
+      "seq": 20,
       "time": 0,
       "data": {
         "turn": 1,
@@ -321,7 +367,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 18,
+      "seq": 21,
       "time": 0,
       "data": {
         "turn": 1,
@@ -335,7 +381,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 19,
+      "seq": 22,
       "time": 0,
       "data": {
         "turn": 1,
@@ -351,7 +397,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 20,
+      "seq": 23,
       "time": 0,
       "data": {
         "turn": 1,
@@ -370,7 +416,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 21,
+      "seq": 24,
       "time": 0,
       "data": {
         "turn": 1,
@@ -386,7 +432,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 22,
+      "seq": 25,
       "time": 0,
       "data": {
         "turn": 1,
@@ -401,7 +447,7 @@
     },
     {
       "type": "assistant/message",
-      "seq": 23,
+      "seq": 26,
       "time": 0,
       "data": {
         "turn": 1,
@@ -429,17 +475,17 @@
         }
       },
       "sourceEventSeqs": [
-        18,
-        19,
-        20,
         21,
-        22
+        22,
+        23,
+        24,
+        25
       ],
       "surfaceOp": "append"
     },
     {
       "type": "tool/call",
-      "seq": 24,
+      "seq": 27,
       "time": 0,
       "data": {
         "turn": 1,
@@ -451,7 +497,7 @@
     },
     {
       "type": "tool/result",
-      "seq": 25,
+      "seq": 28,
       "time": 0,
       "data": {
         "turn": 1,
@@ -484,13 +530,13 @@
         }
       },
       "sourceEventSeqs": [
-        24
+        27
       ],
       "surfaceOp": "append"
     },
     {
       "type": "step/end",
-      "seq": 26,
+      "seq": 29,
       "time": 0,
       "data": {
         "turn": 1,
@@ -499,7 +545,7 @@
     },
     {
       "type": "step/start",
-      "seq": 27,
+      "seq": 30,
       "time": 0,
       "data": {
         "turn": 1,
@@ -508,7 +554,7 @@
     },
     {
       "type": "request/header",
-      "seq": 28,
+      "seq": 31,
       "time": 0,
       "data": {
         "header": {
@@ -545,7 +591,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 29,
+      "seq": 32,
       "time": 0,
       "data": {
         "turn": 1,
@@ -559,7 +605,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 30,
+      "seq": 33,
       "time": 0,
       "data": {
         "turn": 1,
@@ -575,7 +621,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 31,
+      "seq": 34,
       "time": 0,
       "data": {
         "turn": 1,
@@ -594,7 +640,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 32,
+      "seq": 35,
       "time": 0,
       "data": {
         "turn": 1,
@@ -610,7 +656,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 33,
+      "seq": 36,
       "time": 0,
       "data": {
         "turn": 1,
@@ -625,7 +671,7 @@
     },
     {
       "type": "assistant/message",
-      "seq": 34,
+      "seq": 37,
       "time": 0,
       "data": {
         "turn": 1,
@@ -653,17 +699,17 @@
         }
       },
       "sourceEventSeqs": [
-        29,
-        30,
-        31,
         32,
-        33
+        33,
+        34,
+        35,
+        36
       ],
       "surfaceOp": "append"
     },
     {
       "type": "tool/call",
-      "seq": 35,
+      "seq": 38,
       "time": 0,
       "data": {
         "turn": 1,
@@ -675,7 +721,7 @@
     },
     {
       "type": "tool/code-dispatch-start",
-      "seq": 36,
+      "seq": 39,
       "time": 0,
       "data": {
         "rootCallId": "advanced-code",
@@ -689,7 +735,7 @@
     },
     {
       "type": "tool/code-dispatch",
-      "seq": 37,
+      "seq": 40,
       "time": 0,
       "data": {
         "rootCallId": "advanced-code",
@@ -710,7 +756,7 @@
     },
     {
       "type": "tool/result",
-      "seq": 38,
+      "seq": 41,
       "time": 0,
       "data": {
         "turn": 1,
@@ -738,13 +784,13 @@
         }
       },
       "sourceEventSeqs": [
-        35
+        38
       ],
       "surfaceOp": "append"
     },
     {
       "type": "step/end",
-      "seq": 39,
+      "seq": 42,
       "time": 0,
       "data": {
         "turn": 1,
@@ -753,7 +799,7 @@
     },
     {
       "type": "step/start",
-      "seq": 40,
+      "seq": 43,
       "time": 0,
       "data": {
         "turn": 1,
@@ -762,7 +808,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 41,
+      "seq": 44,
       "time": 0,
       "data": {
         "turn": 1,
@@ -776,7 +822,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 42,
+      "seq": 45,
       "time": 0,
       "data": {
         "turn": 1,
@@ -792,7 +838,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 43,
+      "seq": 46,
       "time": 0,
       "data": {
         "turn": 1,
@@ -811,7 +857,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 44,
+      "seq": 47,
       "time": 0,
       "data": {
         "turn": 1,
@@ -827,7 +873,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 45,
+      "seq": 48,
       "time": 0,
       "data": {
         "turn": 1,
@@ -842,7 +888,7 @@
     },
     {
       "type": "assistant/message",
-      "seq": 46,
+      "seq": 49,
       "time": 0,
       "data": {
         "turn": 1,
@@ -870,17 +916,17 @@
         }
       },
       "sourceEventSeqs": [
-        41,
-        42,
-        43,
         44,
-        45
+        45,
+        46,
+        47,
+        48
       ],
       "surfaceOp": "append"
     },
     {
       "type": "tool/call",
-      "seq": 47,
+      "seq": 50,
       "time": 0,
       "data": {
         "turn": 1,
@@ -892,7 +938,7 @@
     },
     {
       "type": "tool/result",
-      "seq": 48,
+      "seq": 51,
       "time": 0,
       "data": {
         "turn": 1,
@@ -920,13 +966,13 @@
         }
       },
       "sourceEventSeqs": [
-        47
+        50
       ],
       "surfaceOp": "append"
     },
     {
       "type": "step/end",
-      "seq": 49,
+      "seq": 52,
       "time": 0,
       "data": {
         "turn": 1,
@@ -935,7 +981,7 @@
     },
     {
       "type": "step/start",
-      "seq": 50,
+      "seq": 53,
       "time": 0,
       "data": {
         "turn": 1,
@@ -944,7 +990,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 51,
+      "seq": 54,
       "time": 0,
       "data": {
         "turn": 1,
@@ -958,7 +1004,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 52,
+      "seq": 55,
       "time": 0,
       "data": {
         "turn": 1,
@@ -974,7 +1020,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 53,
+      "seq": 56,
       "time": 0,
       "data": {
         "turn": 1,
@@ -993,7 +1039,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 54,
+      "seq": 57,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1009,7 +1055,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 55,
+      "seq": 58,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1024,7 +1070,7 @@
     },
     {
       "type": "assistant/message",
-      "seq": 56,
+      "seq": 59,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1052,17 +1098,17 @@
         }
       },
       "sourceEventSeqs": [
-        51,
-        52,
-        53,
         54,
-        55
+        55,
+        56,
+        57,
+        58
       ],
       "surfaceOp": "append"
     },
     {
       "type": "tool/call",
-      "seq": 57,
+      "seq": 60,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1074,7 +1120,7 @@
     },
     {
       "type": "tool-workflow/run-start",
-      "seq": 58,
+      "seq": 61,
       "time": 0,
       "data": {
         "runId": "{{workflow-run}}",
@@ -1083,7 +1129,7 @@
     },
     {
       "type": "tool-workflow/agent-start",
-      "seq": 59,
+      "seq": 62,
       "time": 0,
       "data": {
         "runId": "{{workflow-run}}",
@@ -1095,7 +1141,7 @@
     },
     {
       "type": "tool-workflow/agent-end",
-      "seq": 60,
+      "seq": 63,
       "time": 0,
       "data": {
         "runId": "{{workflow-run}}",
@@ -1105,7 +1151,7 @@
     },
     {
       "type": "tool-workflow/run-end",
-      "seq": 61,
+      "seq": 64,
       "time": 0,
       "data": {
         "runId": "{{workflow-run}}",
@@ -1114,7 +1160,7 @@
     },
     {
       "type": "tool/result",
-      "seq": 62,
+      "seq": 65,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1142,13 +1188,13 @@
         }
       },
       "sourceEventSeqs": [
-        57
+        60
       ],
       "surfaceOp": "append"
     },
     {
       "type": "step/end",
-      "seq": 63,
+      "seq": 66,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1157,7 +1203,7 @@
     },
     {
       "type": "step/start",
-      "seq": 64,
+      "seq": 67,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1166,7 +1212,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 65,
+      "seq": 68,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1180,7 +1226,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 66,
+      "seq": 69,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1196,7 +1242,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 67,
+      "seq": 70,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1215,7 +1261,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 68,
+      "seq": 71,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1231,7 +1277,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 69,
+      "seq": 72,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1246,7 +1292,7 @@
     },
     {
       "type": "assistant/message",
-      "seq": 70,
+      "seq": 73,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1274,17 +1320,17 @@
         }
       },
       "sourceEventSeqs": [
-        65,
-        66,
-        67,
         68,
-        69
+        69,
+        70,
+        71,
+        72
       ],
       "surfaceOp": "append"
     },
     {
       "type": "tool/call",
-      "seq": 71,
+      "seq": 74,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1296,7 +1342,7 @@
     },
     {
       "type": "tool/result",
-      "seq": 72,
+      "seq": 75,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1324,13 +1370,13 @@
         }
       },
       "sourceEventSeqs": [
-        71
+        74
       ],
       "surfaceOp": "append"
     },
     {
       "type": "step/end",
-      "seq": 73,
+      "seq": 76,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1339,7 +1385,7 @@
     },
     {
       "type": "step/start",
-      "seq": 74,
+      "seq": 77,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1348,7 +1394,7 @@
     },
     {
       "type": "request/header",
-      "seq": 75,
+      "seq": 78,
       "time": 0,
       "data": {
         "header": {
@@ -1384,7 +1430,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 76,
+      "seq": 79,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1398,7 +1444,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 77,
+      "seq": 80,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1412,7 +1458,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 78,
+      "seq": 81,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1429,7 +1475,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 79,
+      "seq": 82,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1445,7 +1491,7 @@
     },
     {
       "type": "assistant/chunk",
-      "seq": 80,
+      "seq": 83,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1460,7 +1506,7 @@
     },
     {
       "type": "assistant/message",
-      "seq": 81,
+      "seq": 84,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1486,17 +1532,17 @@
         }
       },
       "sourceEventSeqs": [
-        76,
-        77,
-        78,
         79,
-        80
+        80,
+        81,
+        82,
+        83
       ],
       "surfaceOp": "append"
     },
     {
       "type": "step/end",
-      "seq": 82,
+      "seq": 85,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1505,7 +1551,7 @@
     },
     {
       "type": "turn/end",
-      "seq": 83,
+      "seq": 86,
       "time": 0,
       "data": {
         "turn": 1,
@@ -1589,8 +1635,72 @@
       "payload": {
         "sessionId": "{{parent}}",
         "event": {
-          "type": "step/start",
+          "type": "schedule/change",
           "seq": 3,
+          "time": 0,
+          "data": {
+            "version": 1,
+            "operation": "create",
+            "schedule": {
+              "id": "sdk-snapshot-schedule",
+              "kind": "after",
+              "prompt": "SDK snapshot Schedule delivery",
+              "afterSeconds": 1,
+              "scheduledAt": "2026-08-05T12:00:00.000Z"
+            }
+          }
+        }
+      }
+    },
+    {
+      "method": "session.event",
+      "payload": {
+        "sessionId": "{{parent}}",
+        "event": {
+          "type": "schedule/delivery",
+          "seq": 4,
+          "time": 0,
+          "data": {
+            "version": 2,
+            "operation": "delivery-pending",
+            "deliveryId": "schedule-delivery-v2-f4oeBVbbKnlc-nTkgrbOHhKk5Dg6H7V0EOPj05NyuOE",
+            "messageId": "schedule-message-v2-BSVeA921vpkJrpcc6F0HeibK9YjTybd-cx4rQfuIl3c",
+            "acceptedAt": "2026-08-05T12:00:00.000Z",
+            "occurrences": [
+              {
+                "occurrenceId": "schedule-occurrence-v2-RPGgRGR3TuYfX9X3CocdmvCnhOhjP9ewzIDZUvZd1Fs",
+                "scheduleId": "sdk-snapshot-schedule",
+                "occurrenceAt": "2026-08-05T12:00:00.000Z"
+              }
+            ]
+          },
+          "ignorable": true
+        }
+      }
+    },
+    {
+      "method": "session.event",
+      "payload": {
+        "sessionId": "{{parent}}",
+        "event": {
+          "type": "schedule/change",
+          "seq": 5,
+          "time": 0,
+          "data": {
+            "version": 1,
+            "operation": "dispatch",
+            "id": "sdk-snapshot-schedule"
+          }
+        }
+      }
+    },
+    {
+      "method": "session.event",
+      "payload": {
+        "sessionId": "{{parent}}",
+        "event": {
+          "type": "step/start",
+          "seq": 6,
           "time": 0,
           "data": {
             "turn": 1,
@@ -1605,7 +1715,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "user/message",
-          "seq": 4,
+          "seq": 7,
           "time": 0,
           "data": {
             "content": [
@@ -1630,12 +1740,12 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "session/title",
-          "seq": 5,
+          "seq": 8,
           "time": 0,
           "data": {
             "title": "Run the advanced packaged-runtime snapsh",
             "messageSeqs": [
-              4
+              7
             ],
             "source": {
               "kind": "fallback"
@@ -1650,7 +1760,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "request/header",
-          "seq": 6,
+          "seq": 9,
           "time": 0,
           "data": {
             "header": {
@@ -1692,7 +1802,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "request/context",
-          "seq": 7,
+          "seq": 10,
           "time": 0,
           "data": {
             "provider": "deepseek-official",
@@ -1708,7 +1818,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 8,
+          "seq": 11,
           "time": 0,
           "data": {
             "turn": 1,
@@ -1728,7 +1838,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 9,
+          "seq": 12,
           "time": 0,
           "data": {
             "turn": 1,
@@ -1750,7 +1860,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 10,
+          "seq": 13,
           "time": 0,
           "data": {
             "turn": 1,
@@ -1775,7 +1885,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 11,
+          "seq": 14,
           "time": 0,
           "data": {
             "turn": 1,
@@ -1797,7 +1907,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 12,
+          "seq": 15,
           "time": 0,
           "data": {
             "turn": 1,
@@ -1818,7 +1928,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/message",
-          "seq": 13,
+          "seq": 16,
           "time": 0,
           "data": {
             "turn": 1,
@@ -1846,11 +1956,11 @@
             }
           },
           "sourceEventSeqs": [
-            8,
-            9,
-            10,
             11,
-            12
+            12,
+            13,
+            14,
+            15
           ],
           "surfaceOp": "append"
         }
@@ -1862,7 +1972,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "tool/call",
-          "seq": 14,
+          "seq": 17,
           "time": 0,
           "data": {
             "turn": 1,
@@ -1880,7 +1990,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "tool/result",
-          "seq": 15,
+          "seq": 18,
           "time": 0,
           "data": {
             "turn": 1,
@@ -1912,7 +2022,7 @@
             }
           },
           "sourceEventSeqs": [
-            14
+            17
           ],
           "surfaceOp": "append"
         }
@@ -1924,7 +2034,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "step/end",
-          "seq": 16,
+          "seq": 19,
           "time": 0,
           "data": {
             "turn": 1,
@@ -1939,7 +2049,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "step/start",
-          "seq": 17,
+          "seq": 20,
           "time": 0,
           "data": {
             "turn": 1,
@@ -1954,7 +2064,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 18,
+          "seq": 21,
           "time": 0,
           "data": {
             "turn": 1,
@@ -1974,7 +2084,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 19,
+          "seq": 22,
           "time": 0,
           "data": {
             "turn": 1,
@@ -1996,7 +2106,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 20,
+          "seq": 23,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2021,7 +2131,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 21,
+          "seq": 24,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2043,7 +2153,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 22,
+          "seq": 25,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2064,7 +2174,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/message",
-          "seq": 23,
+          "seq": 26,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2092,11 +2202,11 @@
             }
           },
           "sourceEventSeqs": [
-            18,
-            19,
-            20,
             21,
-            22
+            22,
+            23,
+            24,
+            25
           ],
           "surfaceOp": "append"
         }
@@ -2108,7 +2218,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "tool/call",
-          "seq": 24,
+          "seq": 27,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2126,7 +2236,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "tool/result",
-          "seq": 25,
+          "seq": 28,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2159,7 +2269,7 @@
             }
           },
           "sourceEventSeqs": [
-            24
+            27
           ],
           "surfaceOp": "append"
         }
@@ -2171,7 +2281,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "step/end",
-          "seq": 26,
+          "seq": 29,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2186,7 +2296,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "step/start",
-          "seq": 27,
+          "seq": 30,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2201,7 +2311,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "request/header",
-          "seq": 28,
+          "seq": 31,
           "time": 0,
           "data": {
             "header": {
@@ -2244,7 +2354,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 29,
+          "seq": 32,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2264,7 +2374,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 30,
+          "seq": 33,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2286,7 +2396,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 31,
+          "seq": 34,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2311,7 +2421,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 32,
+          "seq": 35,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2333,7 +2443,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 33,
+          "seq": 36,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2354,7 +2464,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/message",
-          "seq": 34,
+          "seq": 37,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2382,11 +2492,11 @@
             }
           },
           "sourceEventSeqs": [
-            29,
-            30,
-            31,
             32,
-            33
+            33,
+            34,
+            35,
+            36
           ],
           "surfaceOp": "append"
         }
@@ -2398,7 +2508,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "tool/call",
-          "seq": 35,
+          "seq": 38,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2416,7 +2526,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "tool/code-dispatch-start",
-          "seq": 36,
+          "seq": 39,
           "time": 0,
           "data": {
             "rootCallId": "advanced-code",
@@ -2436,7 +2546,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "tool/code-dispatch",
-          "seq": 37,
+          "seq": 40,
           "time": 0,
           "data": {
             "rootCallId": "advanced-code",
@@ -2463,7 +2573,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "tool/result",
-          "seq": 38,
+          "seq": 41,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2491,7 +2601,7 @@
             }
           },
           "sourceEventSeqs": [
-            35
+            38
           ],
           "surfaceOp": "append"
         }
@@ -2503,7 +2613,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "step/end",
-          "seq": 39,
+          "seq": 42,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2518,7 +2628,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "step/start",
-          "seq": 40,
+          "seq": 43,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2533,7 +2643,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 41,
+          "seq": 44,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2553,7 +2663,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 42,
+          "seq": 45,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2575,7 +2685,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 43,
+          "seq": 46,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2600,7 +2710,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 44,
+          "seq": 47,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2622,7 +2732,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 45,
+          "seq": 48,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2643,7 +2753,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/message",
-          "seq": 46,
+          "seq": 49,
           "time": 0,
           "data": {
             "turn": 1,
@@ -2671,11 +2781,11 @@
             }
           },
           "sourceEventSeqs": [
-            41,
-            42,
-            43,
             44,
-            45
+            45,
+            46,
+            47,
+            48
           ],
           "surfaceOp": "append"
         }
@@ -2687,7 +2797,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "tool/call",
-          "seq": 47,
+          "seq": 50,
           "time": 0,
           "data": {
             "turn": 1,
@@ -3153,7 +3263,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "tool/result",
-          "seq": 48,
+          "seq": 51,
           "time": 0,
           "data": {
             "turn": 1,
@@ -3181,7 +3291,7 @@
             }
           },
           "sourceEventSeqs": [
-            47
+            50
           ],
           "surfaceOp": "append"
         }
@@ -3193,7 +3303,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "step/end",
-          "seq": 49,
+          "seq": 52,
           "time": 0,
           "data": {
             "turn": 1,
@@ -3208,7 +3318,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "step/start",
-          "seq": 50,
+          "seq": 53,
           "time": 0,
           "data": {
             "turn": 1,
@@ -3223,7 +3333,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 51,
+          "seq": 54,
           "time": 0,
           "data": {
             "turn": 1,
@@ -3243,7 +3353,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 52,
+          "seq": 55,
           "time": 0,
           "data": {
             "turn": 1,
@@ -3265,7 +3375,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 53,
+          "seq": 56,
           "time": 0,
           "data": {
             "turn": 1,
@@ -3290,7 +3400,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 54,
+          "seq": 57,
           "time": 0,
           "data": {
             "turn": 1,
@@ -3312,7 +3422,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 55,
+          "seq": 58,
           "time": 0,
           "data": {
             "turn": 1,
@@ -3333,7 +3443,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/message",
-          "seq": 56,
+          "seq": 59,
           "time": 0,
           "data": {
             "turn": 1,
@@ -3361,11 +3471,11 @@
             }
           },
           "sourceEventSeqs": [
-            51,
-            52,
-            53,
             54,
-            55
+            55,
+            56,
+            57,
+            58
           ],
           "surfaceOp": "append"
         }
@@ -3377,7 +3487,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "tool/call",
-          "seq": 57,
+          "seq": 60,
           "time": 0,
           "data": {
             "turn": 1,
@@ -3395,7 +3505,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "tool-workflow/run-start",
-          "seq": 58,
+          "seq": 61,
           "time": 0,
           "data": {
             "runId": "{{workflow-run}}",
@@ -3653,7 +3763,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "tool-workflow/agent-start",
-          "seq": 59,
+          "seq": 62,
           "time": 0,
           "data": {
             "runId": "{{workflow-run}}",
@@ -3875,7 +3985,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "tool-workflow/agent-end",
-          "seq": 60,
+          "seq": 63,
           "time": 0,
           "data": {
             "runId": "{{workflow-run}}",
@@ -3891,7 +4001,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "tool-workflow/run-end",
-          "seq": 61,
+          "seq": 64,
           "time": 0,
           "data": {
             "runId": "{{workflow-run}}",
@@ -3906,7 +4016,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "tool/result",
-          "seq": 62,
+          "seq": 65,
           "time": 0,
           "data": {
             "turn": 1,
@@ -3934,7 +4044,7 @@
             }
           },
           "sourceEventSeqs": [
-            57
+            60
           ],
           "surfaceOp": "append"
         }
@@ -3946,7 +4056,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "step/end",
-          "seq": 63,
+          "seq": 66,
           "time": 0,
           "data": {
             "turn": 1,
@@ -3961,7 +4071,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "step/start",
-          "seq": 64,
+          "seq": 67,
           "time": 0,
           "data": {
             "turn": 1,
@@ -3976,7 +4086,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 65,
+          "seq": 68,
           "time": 0,
           "data": {
             "turn": 1,
@@ -3996,7 +4106,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 66,
+          "seq": 69,
           "time": 0,
           "data": {
             "turn": 1,
@@ -4018,7 +4128,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 67,
+          "seq": 70,
           "time": 0,
           "data": {
             "turn": 1,
@@ -4043,7 +4153,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 68,
+          "seq": 71,
           "time": 0,
           "data": {
             "turn": 1,
@@ -4065,7 +4175,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 69,
+          "seq": 72,
           "time": 0,
           "data": {
             "turn": 1,
@@ -4086,7 +4196,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/message",
-          "seq": 70,
+          "seq": 73,
           "time": 0,
           "data": {
             "turn": 1,
@@ -4114,11 +4224,11 @@
             }
           },
           "sourceEventSeqs": [
-            65,
-            66,
-            67,
             68,
-            69
+            69,
+            70,
+            71,
+            72
           ],
           "surfaceOp": "append"
         }
@@ -4130,7 +4240,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "tool/call",
-          "seq": 71,
+          "seq": 74,
           "time": 0,
           "data": {
             "turn": 1,
@@ -4148,7 +4258,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "tool/result",
-          "seq": 72,
+          "seq": 75,
           "time": 0,
           "data": {
             "turn": 1,
@@ -4176,7 +4286,7 @@
             }
           },
           "sourceEventSeqs": [
-            71
+            74
           ],
           "surfaceOp": "append"
         }
@@ -4188,7 +4298,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "step/end",
-          "seq": 73,
+          "seq": 76,
           "time": 0,
           "data": {
             "turn": 1,
@@ -4203,7 +4313,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "step/start",
-          "seq": 74,
+          "seq": 77,
           "time": 0,
           "data": {
             "turn": 1,
@@ -4218,7 +4328,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "request/header",
-          "seq": 75,
+          "seq": 78,
           "time": 0,
           "data": {
             "header": {
@@ -4260,7 +4370,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 76,
+          "seq": 79,
           "time": 0,
           "data": {
             "turn": 1,
@@ -4280,7 +4390,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 77,
+          "seq": 80,
           "time": 0,
           "data": {
             "turn": 1,
@@ -4300,7 +4410,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 78,
+          "seq": 81,
           "time": 0,
           "data": {
             "turn": 1,
@@ -4323,7 +4433,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 79,
+          "seq": 82,
           "time": 0,
           "data": {
             "turn": 1,
@@ -4345,7 +4455,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/chunk",
-          "seq": 80,
+          "seq": 83,
           "time": 0,
           "data": {
             "turn": 1,
@@ -4366,7 +4476,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "assistant/message",
-          "seq": 81,
+          "seq": 84,
           "time": 0,
           "data": {
             "turn": 1,
@@ -4392,11 +4502,11 @@
             }
           },
           "sourceEventSeqs": [
-            76,
-            77,
-            78,
             79,
-            80
+            80,
+            81,
+            82,
+            83
           ],
           "surfaceOp": "append"
         }
@@ -4408,7 +4518,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "step/end",
-          "seq": 82,
+          "seq": 85,
           "time": 0,
           "data": {
             "turn": 1,
@@ -4423,7 +4533,7 @@
         "sessionId": "{{parent}}",
         "event": {
           "type": "turn/end",
-          "seq": 83,
+          "seq": 86,
           "time": 0,
           "data": {
             "turn": 1,

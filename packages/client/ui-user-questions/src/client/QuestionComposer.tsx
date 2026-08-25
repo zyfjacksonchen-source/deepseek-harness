@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react'
 import clsx from 'clsx'
 import {
   Button, IconCheckOutline14, IconChevronDownOutline14, IconChevronLeftOutline14,
@@ -6,7 +6,8 @@ import {
   IconEditOutline16, MarkdownText,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
-  PendingQuestion, planReviewOf,
+  imageReviewOf, PendingQuestion, planReviewOf,
+  type ImageReview,
   type QuestionAnswer, type QuestionComposerProps,
 } from './contract/slots.ts'
 import { PlanReviewPanel } from './PlanReviewPanel.tsx'
@@ -63,12 +64,23 @@ export function QuestionComposer(props: QuestionComposerProps) {
   // select/render dispatch — per-dispatch minting would churn memo identity).
   const question = useMemo(() => new PendingQuestion(props.matched), [props.matched])
   const review = useMemo(() => planReviewOf(question.questions), [question])
+  const imageReview = useMemo(() => imageReviewOf(question.questions), [question])
+  if (imageReview !== undefined) {
+    return <QuestionFlow
+      key={question.key} pending={question} imageReview={imageReview}
+      loadImage={props.loadImage} t={props.t}
+    />
+  }
   return review === undefined
     ? <QuestionFlow key={question.key} pending={question} t={props.t} />
     : <PlanReviewPanel key={question.key} pending={question} review={review} t={props.t} />
 }
 
-function QuestionFlow({ pending, t }: { pending: PendingQuestion } & Pick<QuestionComposerProps, 't'>) {
+function QuestionFlow({ pending, imageReview, loadImage, t }: {
+  pending: PendingQuestion
+  imageReview?: ImageReview
+  loadImage?: QuestionComposerProps['loadImage']
+} & Pick<QuestionComposerProps, 't'>) {
   const questions = pending.questions
   const [index, setIndex] = useState(0)
   const [drafts, setDrafts] = useState<DraftAnswer[]>(() => questions.map(() => ({
@@ -79,6 +91,7 @@ function QuestionFlow({ pending, t }: { pending: PendingQuestion } & Pick<Questi
   // Collapsed to the header strip so the conversation above stays readable
   // while the user decides; the drafts survive because the state lives here.
   const [minimized, setMinimized] = useState(false)
+  const [reviewReady, setReviewReady] = useState(imageReview === undefined)
   // The free-form textarea autofocuses on first presentation; re-expanding a
   // collapsed question must not steal focus from the expand toggle back into
   // the input, so focus is granted once per question index.
@@ -234,6 +247,11 @@ function QuestionFlow({ pending, t }: { pending: PendingQuestion } & Pick<Questi
         {!minimized && (
           <>
             <div className={css.body} data-question-scroll>
+              {imageReview !== undefined && loadImage !== undefined && (
+                <ImageReviewMedia
+                  review={imageReview} loadImage={loadImage} onReady={setReviewReady} t={t}
+                />
+              )}
               {question.detail !== undefined && (
                 <div className={css.detail}><MarkdownText text={question.detail} /></div>
               )}
@@ -248,7 +266,8 @@ function QuestionFlow({ pending, t }: { pending: PendingQuestion } & Pick<Questi
                       role={question.multiSelect === true ? 'checkbox' : 'radio'}
                       aria-checked={selected}
                       aria-label={display.label}
-                      disabled={busy !== null}
+                      disabled={busy !== null
+                        || imageReview !== undefined && option.label === imageReview.approve.label && !reviewReady}
                       onClick={() => { choose(option.label) }}
                       onKeyDown={(event) => {
                         if (event.key !== 'Enter' || !drafts.every(completed)) return
@@ -360,6 +379,68 @@ function QuestionFlow({ pending, t }: { pending: PendingQuestion } & Pick<Questi
           </>
         )}
       </section>
+    </div>
+  )
+}
+
+/** Load the session-authorized source/candidate pair; acceptance stays disabled until every image is visible. */
+function ImageReviewMedia({ review, loadImage, onReady, t }: {
+  review: ImageReview
+  loadImage: QuestionComposerProps['loadImage']
+  onReady: (ready: boolean) => void
+} & Pick<QuestionComposerProps, 't'>) {
+  const images = useMemo(() => [...review.sources, review.output], [review])
+  const [urls, setUrls] = useState<readonly string[]>([])
+  const [painted, setPainted] = useState<ReadonlySet<number>>(() => new Set())
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let current = true
+    setUrls([])
+    setPainted(new Set())
+    setFailed(false)
+    onReady(false)
+    void Promise.all(images.map(image => loadImage(image))).then(
+      (resolved) => {
+        if (!current) return
+        setUrls(resolved)
+      },
+      () => {
+        if (!current) return
+        setFailed(true)
+      },
+    )
+    return () => { current = false }
+  }, [images, loadImage, onReady])
+
+  const resolved = urls.length === images.length
+  const loaded = resolved && painted.size === images.length
+  useEffect(() => { onReady(loaded && !failed) }, [failed, loaded, onReady])
+
+  return (
+    <div className={css.reviewMedia}>
+      {failed && <div className={css.reviewError} role="alert">{t('image.loadError')}</div>}
+      {!failed && !loaded && <div className={css.reviewLoading}>{t('image.loading')}</div>}
+      {resolved && (
+        <div className={css.reviewGrid}>
+          {urls.map((url, index) => {
+            const output = index === urls.length - 1
+            return (
+              <figure className={css.reviewFigure} key={images[index]?.attachmentId}>
+                <figcaption>{output ? t('image.output') : `${t('image.source')} ${String(index + 1)}`}</figcaption>
+                <img
+                  src={url}
+                  alt={output ? t('image.output') : `${t('image.source')} ${String(index + 1)}`}
+                  onLoad={() => {
+                    setPainted(current => current.has(index) ? current : new Set(current).add(index))
+                  }}
+                  onError={() => { setFailed(true) }}
+                />
+              </figure>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

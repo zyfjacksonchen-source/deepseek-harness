@@ -19,6 +19,23 @@ declare module '@deepseek-ai/cordis' {
 
 import type { AskUserQuestionAnswer, AskUserQuestionItem } from './types.ts'
 
+const IMAGE_ATTACHMENT_ID = /^sha256:[0-9a-f]{64}$/u
+const IMAGE_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+
+/** Validate the immutable image references carried by an image-review intent. */
+function validReviewImage(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const image = value as Record<string, unknown>
+  const keys = ['attachmentId', 'bytes', 'height', 'mediaType', 'width', ...(image.name === undefined ? [] : ['name'])]
+  return Object.keys(image).sort().join(',') === keys.sort().join(',')
+    && typeof image.attachmentId === 'string' && IMAGE_ATTACHMENT_ID.test(image.attachmentId)
+    && typeof image.mediaType === 'string' && IMAGE_MEDIA_TYPES.has(image.mediaType)
+    && Number.isSafeInteger(image.bytes) && Number(image.bytes) > 0
+    && Number.isSafeInteger(image.width) && Number(image.width) > 0
+    && Number.isSafeInteger(image.height) && Number(image.height) > 0
+    && (image.name === undefined || typeof image.name === 'string')
+}
+
 export type {
   AskUserQuestionAnswer, AskUserQuestionAnswerItem, AskUserQuestionIntent, AskUserQuestionItem,
   AskUserQuestionOption,
@@ -130,6 +147,14 @@ export class UserQuestionService extends Service {
       if (question.detail === undefined) {
         throw new UserQuestionError(
           `question ${question.id} declares intent ${intent.kind} without the detail it reviews`,
+          'BAD_INTENT')
+      }
+      if (intent.kind === 'image-review'
+        && (intent.sources.length === 0 || intent.sources.length > 16
+          || intent.sources.some(source => !validReviewImage(source))
+          || !validReviewImage(intent.output))) {
+        throw new UserQuestionError(
+          `question ${question.id} declares an invalid image-review attachment set`,
           'BAD_INTENT')
       }
     }

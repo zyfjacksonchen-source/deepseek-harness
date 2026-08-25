@@ -11,10 +11,16 @@ import type { Wire } from './rpc.schema.ts'
 import { rpcErrorSchema, rpcIdSchema } from './rpc.schema.ts'
 import { approvalRequestIdSchema } from './approvals.schema.ts'
 import {
-  contentBlockSchema, messageIdSchema, sessionEventSchema, sessionIdSchema, toolEventViewSchema,
+  contentBlockSchema, imageAttachmentRefSchema, messageIdSchema, sessionEventSchema, sessionIdSchema,
+  toolEventViewSchema,
 } from './sessions.schema.ts'
 import { taskViewSchema } from './jobs.schema.ts'
 import { workspaceIdSchema, workspaceViewSchema } from './workspace.schema.ts'
+
+const immutableImageAttachmentRefSchema = imageAttachmentRefSchema.refine(
+  image => /^sha256:[0-9a-f]{64}$/u.test(image.attachmentId),
+  { message: 'image-review attachments must use immutable sha256 ids' },
+)
 
 /** Question fields validated strictly against core dsh-user-questions. */
 export const askUserQuestionItemSchema = z.object({
@@ -28,6 +34,12 @@ export const askUserQuestionItemSchema = z.object({
   // rejected frame rather than a silently generic render.
   intent: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('plan-review'), approve: z.string() }),
+    z.object({
+      kind: z.literal('image-review'),
+      approve: z.string(),
+      sources: z.array(immutableImageAttachmentRefSchema).min(1).max(16),
+      output: immutableImageAttachmentRefSchema,
+    }),
   ]).optional(),
 }) satisfies z.ZodType<Wire<AskUserQuestionItem>>
 
@@ -55,6 +67,7 @@ export const muxFrameSchema = z.discriminatedUnion('type', [
     sessionId: sessionIdSchema,
     items: z.array(z.object({
       id: messageIdSchema,
+      mutable: z.boolean(),
       placement: z.union([z.literal('queued'), z.literal('steering'), z.literal('context')]),
       message: messageSchema,
     })),

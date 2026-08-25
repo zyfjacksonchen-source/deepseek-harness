@@ -95,6 +95,7 @@ interface BenchOptions {
 function row(id: string): ConversationSnapshot['queue'][number] {
   return {
     id: id as never, messageId: `message-${id}` as never, placement: 'queued',
+    mutable: true,
     content: [{ type: 'text', text: id }], preview: id, text: id,
   }
 }

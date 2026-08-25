@@ -403,20 +403,25 @@ describe.skipIf(MODE === 'record')('web e2e: conversational reminders', () => {
   it('batches one latest occurrence per overdue Every record into an ordinary follow-up', async () => {
     onTestFailed(() => saveFailureShot(page, 'web-e2e-schedule-every'))
     const ids = new Set(everyRecords.map(record => record.id))
-    const dispatches = everyHandle.agent.session.events.filter(event => (
-      event.type === 'schedule/change'
-      && event.data.operation === 'dispatch'
-      && ids.has(event.data.id)
+    const pending = everyHandle.agent.session.events.find(event => (
+      event.type === 'schedule/delivery'
+      && event.data.operation === 'delivery-pending'
+      && event.data.occurrences.every(occurrence => ids.has(occurrence.scheduleId))
     ))
-    expect(dispatches).toHaveLength(2)
-    const acceptedAt = dispatches.map((event) => {
-      if (event.type !== 'schedule/change' || event.data.operation !== 'dispatch'
-        || !('acceptedAt' in event.data)) throw new Error('expected Every dispatch')
-      return event.data.acceptedAt
-    })
-    expect(new Set(acceptedAt).size).toBe(1)
-    const decision = acceptedAt[0]
-    if (decision === undefined) throw new Error('missing Every decision time')
+    if (pending?.type !== 'schedule/delivery' || pending.data.operation !== 'delivery-pending') {
+      throw new Error('missing Every delivery-pending event')
+    }
+    expect(pending.ignorable).toBe(true)
+    expect(pending.data.occurrences.map(occurrence => occurrence.scheduleId))
+      .toEqual(everyRecords.map(record => record.id))
+    const decision = pending.data.acceptedAt
+    expect(everyHandle.agent.session.events.filter(event => (
+      event.type === 'schedule/delivery'
+      && event.data.operation === 'delivery-complete'
+      && event.data.deliveryId === pending.data.deliveryId
+      && event.data.messageId === pending.data.messageId
+      && event.ignorable === true
+    ))).toHaveLength(1)
 
     const batch = everyHandle.agent.session.events.find(event => (
       event.type === 'user/message'
@@ -507,10 +512,20 @@ describe.skipIf(MODE === 'record')('web e2e: conversational reminders', () => {
       prompt: AT_PROMPT,
       scheduledAt,
     })
+    const pending = atHandle.agent.session.events.find(event => (
+      event.type === 'schedule/delivery'
+      && event.data.operation === 'delivery-pending'
+      && event.data.occurrences.some(occurrence => occurrence.scheduleId === schedule.id)
+    ))
+    if (pending?.type !== 'schedule/delivery' || pending.data.operation !== 'delivery-pending') {
+      throw new Error('At reminder did not create a durable delivery-pending event')
+    }
+    expect(pending.ignorable).toBe(true)
     expect(atHandle.agent.session.events.filter(event => (
-      event.type === 'schedule/change'
-      && event.data.operation === 'dispatch'
-      && event.data.id === schedule.id
+      event.type === 'schedule/delivery'
+      && event.data.operation === 'delivery-complete'
+      && event.data.deliveryId === pending.data.deliveryId
+      && event.ignorable === true
     ))).toHaveLength(1)
     expect(atAdapter.requests).toHaveLength(4)
     const reminderRequest = atAdapter.requests[3]

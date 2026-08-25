@@ -5,68 +5,27 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { EveryScheduleRecord, OneShotScheduleRecord } from './types.ts'
+import { freezeMessage } from '@deepseek-ai/dsh-llm'
 import {
+  createScheduleDeliveryPendingChange,
   foldScheduleEvents,
-  renderEveryReminderBatchFraming,
-  renderReminderFraming,
-  resolveEveryOccurrence,
+  isPendingScheduleDeliveryMessage,
+  isScheduleDeliveryMessage,
+  renderScheduleDeliveryFraming,
+  resolveScheduleDueDecision,
   ScheduleLogError,
 } from './domain.ts'
-import type { FoldedSchedules } from './domain.ts'
+import type {
+  FoldedSchedules,
+  PendingScheduleDelivery,
+  ScheduleDueDecision,
+} from './domain.ts'
+import type { ScheduleDeliveryAdmission } from './admission.ts'
 import { flushSchedulePersistence } from './persistence.ts'
 import { runScheduleTransaction } from './transaction.ts'
 
 /** Largest delay that Node timers represent without clamping. */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647
-
-interface EveryDue {
-  readonly record: EveryScheduleRecord
-  readonly occurrenceAt: string
-}
-
-type DueDecision =
-  | { readonly kind: 'one-shot'; readonly record: OneShotScheduleRecord }
-  | { readonly kind: 'every'; readonly reminders: readonly EveryDue[]; readonly acceptedAt: string }
-  | { readonly kind: 'wait'; readonly target?: number }
-
-/** Select one due one-shot, one complete fixed-rate batch, or the next wake. */
-function dueDecision(folded: FoldedSchedules, now: number): DueDecision {
-  const indexed = folded.active.map((record, index) => ({ record, index }))
-  const byTargetThenCreate = (
-    left: { readonly record: { readonly scheduledAt: string }; readonly index: number },
-    right: { readonly record: { readonly scheduledAt: string }; readonly index: number },
-  ): number => Date.parse(left.record.scheduledAt) - Date.parse(right.record.scheduledAt)
-    || left.index - right.index
-
-  const oneShot = indexed
-    .filter((entry): entry is { record: OneShotScheduleRecord; index: number } =>
-      entry.record.kind !== 'every' && Date.parse(entry.record.scheduledAt) <= now)
-    .sort(byTargetThenCreate)[0]?.record
-  if (oneShot !== undefined) return { kind: 'one-shot', record: oneShot }
-
-  const every = indexed
-    .filter((entry): entry is { record: EveryScheduleRecord; index: number } =>
-      entry.record.kind === 'every' && Date.parse(entry.record.scheduledAt) <= now)
-    .sort(byTargetThenCreate)
-  if (every.length > 0) {
-    return {
-      kind: 'every',
-      acceptedAt: new Date(now).toISOString(),
-      reminders: every.map(({ record }) => ({
-        record,
-        occurrenceAt: resolveEveryOccurrence(record, now).occurrenceAt,
-      })),
-    }
-  }
-
-  const target = folded.active.reduce<number | undefined>((selected, record) => {
-    const candidate = Date.parse(record.scheduledAt)
-    return candidate > now && (selected === undefined || candidate < selected) ? candidate : selected
-  }, undefined)
-  return { kind: 'wait', ...(target === undefined ? {} : { target }) }
-}
 
 /** Render an unknown value for process-local diagnostics only. */
 function renderThrown(value: unknown): string {
@@ -78,6 +37,7 @@ export class ScheduleRuntime {
   private readonly stop = Promise.withResolvers<void>()
   private timer: ReturnType<typeof setTimeout> | undefined
   private idleWait: Promise<void> | undefined
+  private admissionWait: Promise<void> | undefined
   private run: Promise<void> | undefined
   private requested = false
   private stopping = false
@@ -88,10 +48,12 @@ export class ScheduleRuntime {
    * Construct an inactive runtime; {@link start} begins the first preflight.
    * @param ctx - Global service context.
    * @param agent - Exact live root agent.
+   * @param admission - Process-local delivery admission selected before runtime creation.
    */
   constructor(
     private readonly ctx: Context,
     private readonly agent: Agent,
+    private readonly admission: ScheduleDeliveryAdmission,
   ) {}
 
   /** Begin the initial durability preflight and timer derivation. */
@@ -104,6 +66,10 @@ export class ScheduleRuntime {
     if (this.stopping || this.faulted) return
     this.clearTimer()
     this.requested = true
+    if (!this.admission.isOpen) {
+      this.waitForAdmission()
+      return
+    }
     if (this.run !== undefined) return
     let run: Promise<void>
     try {
@@ -134,9 +100,21 @@ export class ScheduleRuntime {
       this.requested = false
       this.clearTimer()
       this.stop.resolve()
-      const pending = [this.run, this.idleWait].filter((value): value is Promise<void> => value !== undefined)
+      const pending = [this.run, this.idleWait, this.admissionWait]
+        .filter((value): value is Promise<void> => value !== undefined)
       await Promise.allSettled(pending)
     })())
+  }
+
+  /** Retain one coalesced trigger until the launcher's one-way gate opens. */
+  private waitForAdmission(): void {
+    if (this.admissionWait !== undefined) return
+    const wait = Promise.race([this.admission.whenOpen(), this.stop.promise])
+    this.admissionWait = wait
+    void wait.then(() => {
+      this.admissionWait = undefined
+      if (this.admission.isOpen) this.requestDrive()
+    })
   }
 
   /** Drain coalesced triggers serially. */
@@ -164,7 +142,7 @@ export class ScheduleRuntime {
 
   /** Whether this runtime may start or continue Schedule work. */
   private isRunnable(): boolean {
-    return !this.stopping && this.isLive()
+    return this.admission.isOpen && !this.stopping && this.isLive()
   }
 
   /** Cancel the currently armed timer, if any. */
@@ -176,6 +154,7 @@ export class ScheduleRuntime {
 
   /** Arm one bounded timer segment; every wake rechecks the wall clock. */
   private arm(target: number, now: number): void {
+    if (!this.isRunnable()) return
     const delay = Math.min(target - now, MAX_TIMER_DELAY_MS)
     this.timer = setTimeout(() => {
       this.timer = undefined
@@ -218,13 +197,80 @@ export class ScheduleRuntime {
   }
 
   /** Contain an invalid wall-clock decision without permanently faulting this runtime. */
-  private decide(folded: FoldedSchedules, now: number): DueDecision | undefined {
+  private decide(folded: FoldedSchedules, now: number): ScheduleDueDecision | undefined {
     try {
-      return dueDecision(folded, now)
+      return resolveScheduleDueDecision(folded.active, now)
     } catch (error: unknown) {
       this.ctx.logger.warn(`schedule: fixed-rate decision failed for agent "${this.agent.id}": ${renderThrown(error)}`)
       return undefined
     }
+  }
+
+  /** Requeue the exact pending message, replacing a cold pending copy to wake its Agent. */
+  private queuePending(delivery: PendingScheduleDelivery): boolean {
+    if (!this.isRunnable()) return false
+    const deterministic = freezeMessage({
+      id: delivery.messageId,
+      role: 'user' as const,
+      content: [{ type: 'text' as const, text: renderScheduleDeliveryFraming(delivery) }],
+      source: { kind: 'plugin' as const, plugin: 'schedule' },
+    })
+    if (this.agent.inbox.nextStep.some(candidate => candidate.id === delivery.messageId)) {
+      this.faulted = true
+      this.ctx.logger.warn(
+        `schedule: pending identity appeared in the next-step Inbox for agent "${this.agent.id}"`,
+      )
+      return false
+    }
+    const reserved = this.agent.inbox.nextTurn
+      .find(candidate => candidate.id === delivery.messageId)
+    if (reserved !== undefined && !isScheduleDeliveryMessage(reserved, delivery)) {
+      this.faulted = true
+      this.ctx.logger.warn(
+        `schedule: pending Inbox identity conflicted for agent "${this.agent.id}"`,
+      )
+      return false
+    }
+    const matching = this.agent.inbox.nextTurn
+      .filter(candidate => isPendingScheduleDeliveryMessage(candidate, delivery))
+    try {
+      for (const candidate of matching) {
+        if (!this.agent.inbox.remove(candidate.id)) {
+          throw new Error('pending message disappeared before Schedule could wake it')
+        }
+      }
+      this.agent.followup(deterministic)
+      return true
+    } catch (error: unknown) {
+      if (this.isLive()) {
+        this.ctx.logger.warn(
+          `schedule: deterministic followup failed for agent "${this.agent.id}": ${renderThrown(error)}`,
+        )
+      }
+      return this.agent.inbox.nextTurn.some(candidate =>
+        isPendingScheduleDeliveryMessage(candidate, delivery))
+    }
+  }
+
+  /** Remove any second compatible copy after one current or old-pin message is durable. */
+  private discardPendingCopies(delivery: PendingScheduleDelivery): boolean {
+    if (!this.isRunnable()) return false
+    for (const message of [...this.agent.inbox.nextStep, ...this.agent.inbox.nextTurn]) {
+      if (isPendingScheduleDeliveryMessage(message, delivery)
+        && !this.agent.inbox.remove(message.id)) {
+        throw new Error('pending message disappeared before Schedule could discard its duplicate')
+      }
+    }
+    return true
+  }
+
+  /** Append the still-missing v1 state mirrors before any reminder can enter Inbox. */
+  private appendManagementDispatches(delivery: PendingScheduleDelivery): boolean {
+    if (!this.isRunnable()) return false
+    for (const change of delivery.managementDispatches) {
+      this.agent.session.append('schedule/change', change)
+    }
+    return true
   }
 
   /** Preflight, fold, arm, or dispatch the next one-shot or fixed-rate batch. */
@@ -243,82 +289,112 @@ export class ScheduleRuntime {
 
     const folded = this.readFolded()
     if (folded === undefined) return
-    const wakeNow = Date.now()
-    const wakeDecision = this.decide(folded, wakeNow)
-    if (wakeDecision === undefined) return
-    if (wakeDecision.kind === 'wait') {
-      if (wakeDecision.target !== undefined) this.arm(wakeDecision.target, wakeNow)
-      return
+    if (folded.pendingDelivery === undefined) {
+      const wakeNow = Date.now()
+      const wakeDecision = this.decide(folded, wakeNow)
+      if (wakeDecision === undefined) return
+      if (wakeDecision.kind === 'wait') {
+        if (wakeDecision.target !== undefined) this.arm(wakeDecision.target, wakeNow)
+        return
+      }
     }
 
-    let maintenance: Promise<boolean>
+    let maintenance: Promise<'none' | 'queued' | 'completed'>
     try {
-      maintenance = this.agent.runMaintenance(() => {
-        if (!this.isRunnable()) return Promise.resolve(false)
+      maintenance = this.agent.runMaintenance(async () => {
+        if (!this.isRunnable()) return 'none'
         const claimed = this.readFolded()
-        if (claimed === undefined) return Promise.resolve(false)
+        if (claimed === undefined) return 'none'
+        if (claimed.pendingDelivery !== undefined) {
+          let delivery = claimed.pendingDelivery
+          if (delivery.managementDispatches.length !== 0) {
+            if (!this.appendManagementDispatches(delivery)) return 'none'
+            try {
+              await flushSchedulePersistence(this.ctx, this.agent.session)
+            } catch (error: unknown) {
+              if (this.isLive()) {
+                this.ctx.logger.warn(
+                  `schedule: management dispatch barrier failed for agent "${this.agent.id}": ${renderThrown(error)}`,
+                )
+              }
+              return 'none'
+            }
+            if (!this.isRunnable()) return 'none'
+            const reconciled = this.readFolded()?.pendingDelivery
+            if (reconciled === undefined || reconciled.deliveryId !== delivery.deliveryId
+              || reconciled.managementDispatches.length !== 0) return 'none'
+            delivery = reconciled
+          }
+          if (delivery.admitted) {
+            if (!this.discardPendingCopies(delivery) || !this.isRunnable()) return 'none'
+            this.agent.session.append('schedule/delivery', {
+              version: 2,
+              operation: 'delivery-complete',
+              deliveryId: delivery.deliveryId,
+              messageId: delivery.messageId,
+            }, { ignorable: true })
+            return 'completed'
+          }
+          return this.queuePending(delivery) ? 'queued' : 'none'
+        }
         const decisionNow = Date.now()
         const decision = this.decide(claimed, decisionNow)
-        if (decision === undefined) return Promise.resolve(false)
+        if (decision === undefined) return 'none'
         if (decision.kind === 'wait') {
           if (decision.target !== undefined) this.arm(decision.target, decisionNow)
-          return Promise.resolve(false)
+          return 'none'
         }
+        const pendingChange = createScheduleDeliveryPendingChange(decision, this.agent.session.seq)
         try {
-          const text = decision.kind === 'one-shot'
-            ? renderReminderFraming(decision.record)
-            : renderEveryReminderBatchFraming(decision.reminders)
-          const message = createUserMessage({
-            content: [{ type: 'text', text }],
-            source: { kind: 'plugin', plugin: 'schedule' },
-          })
-          this.agent.followup(message)
-        } catch (error: unknown) {
-          if (this.isLive()) {
-            this.ctx.logger.warn(`schedule: framing or followup failed for agent "${this.agent.id}": ${renderThrown(error)}`)
+          if (!this.isRunnable()) return 'none'
+          this.agent.session.append('schedule/delivery', pendingChange, { ignorable: true })
+          const reserved = this.readFolded()?.pendingDelivery
+          if (reserved === undefined || reserved.deliveryId !== pendingChange.deliveryId) {
+            throw new Error('delivery-pending did not become the current Schedule outbox row')
           }
-          return Promise.resolve(false)
-        }
-        try {
-          if (decision.kind === 'one-shot') {
-            this.agent.session.append('schedule/change', {
-              version: 1,
-              operation: 'dispatch',
-              id: decision.record.id,
-            })
-          } else {
-            for (const reminder of decision.reminders) {
-              this.agent.session.append('schedule/change', {
-                version: 1,
-                operation: 'dispatch',
-                id: reminder.record.id,
-                acceptedAt: decision.acceptedAt,
-              })
-            }
-          }
+          if (!this.appendManagementDispatches(reserved)) return 'none'
         } catch (error: unknown) {
           this.faulted = true
           this.clearTimer()
-          this.ctx.logger.warn(`schedule: dispatch append failed for agent "${this.agent.id}": ${renderThrown(error)}`)
-          return Promise.resolve(false)
+          this.ctx.logger.warn(
+            `schedule: delivery-pending append failed for agent "${this.agent.id}": ${renderThrown(error)}`,
+          )
+          return 'none'
         }
-        return Promise.resolve(true)
+        try {
+          await flushSchedulePersistence(this.ctx, this.agent.session)
+        } catch (error: unknown) {
+          if (this.isLive()) {
+            this.ctx.logger.warn(
+              `schedule: delivery-pending barrier failed for agent "${this.agent.id}": ${renderThrown(error)}`,
+            )
+          }
+          return 'none'
+        }
+        if (!this.isRunnable()) return 'none'
+        const admitted = this.readFolded()?.pendingDelivery
+        if (admitted === undefined
+          || admitted.deliveryId !== pendingChange.deliveryId
+          || admitted.messageId !== pendingChange.messageId
+          || admitted.managementDispatches.length !== 0) return 'none'
+        return this.queuePending(admitted) ? 'queued' : 'none'
       })
     } catch (_busy: unknown) {
       // `runMaintenance` rejects synchronously only while another agent activity owns the idle phase.
       if (this.isLive()) this.waitForIdle()
       return
     }
-    if (!await maintenance) return
+    const outcome = await maintenance
+    if (outcome === 'none') return
 
     try {
       await flushSchedulePersistence(this.ctx, this.agent.session)
     } catch (error: unknown) {
       if (this.isLive()) {
-        this.ctx.logger.warn(`schedule: dispatch barrier failed for agent "${this.agent.id}": ${renderThrown(error)}`)
+        this.ctx.logger.warn(`schedule: delivery barrier failed for agent "${this.agent.id}": ${renderThrown(error)}`)
       }
       return
     }
-    if (this.isRunnable()) this.requestDrive()
+    if (outcome === 'completed' && this.isRunnable()) this.requestDrive()
   }
 }

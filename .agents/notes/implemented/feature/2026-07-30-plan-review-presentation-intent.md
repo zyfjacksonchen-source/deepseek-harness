@@ -12,7 +12,7 @@ Every one of those affordances is wrong for the surface. Reviewing a plan is one
 
 ## Decision
 
-A question may declare a **presentation intent**, and the Web composer renders a declared intent as its own surface. `AskUserQuestionItem` gains `intent?: AskUserQuestionIntent`, a tagged union whose one member is `{ kind: 'plan-review', approve: string }`; `plan-mode` sets it on the review question, naming `Approve` as the label that approves.
+A question may declare a **presentation intent**, and the Web composer renders a declared intent as its own surface. `AskUserQuestionItem` carries `intent?: AskUserQuestionIntent`, a tagged union with `{ kind: 'plan-review', approve: string }` and `{ kind: 'image-review', approve: string, sources: ImageAttachmentRef[], output: ImageAttachmentRef }`. `plan-mode` sets the first on the review question, naming `Approve` as the label that approves. An image-producing caller sets the second only after it has durably attached the immutable source and candidate references to the question's Session.
 
 An intent changes presentation only. The answer protocol is untouched: a UI honouring the intent answers with the same option labels a generic UI would send, so `exit_plan_mode` reads the same answer fields regardless of which surface collected them, and a UI that does not know a tag renders the generic flow with nothing lost but the layout.
 
@@ -21,6 +21,8 @@ An intent changes presentation only. The answer protocol is untouched: a UI hono
 `ui-user-questions` renders the intent as `PlanReviewPanel`, in the waiting-approval card language: the amber strip carries `Plan review`, the plan is the scrolling markdown body, and the decision row holds three actions — `Chat about it`, `Refuse`, `Approve`. The question text becomes the card's accessible name rather than a headline, because the buttons already say what the decision is. Approve and Refuse answer with the asker's own option labels and keep the asker's descriptions as tooltips; `Chat about it` cancels the request, which returns the composer so the user can simply say what they want. All copy is bilingual under the existing `question` namespace.
 
 Routing lives inside the single composer entry (`QuestionComposer` chooses the presentation) rather than in a second chain registration, and `planReviewOf` claims a request only when the card can send every answer that request allows: one question declaring the intent, the plan as its `detail`, the named approve label offered, and a binary single choice — at most one option besides approve, and not multi-select. A third option or a multi-select batch has answers two buttons cannot express, so the generic flow keeps it, and keeps anything else the card cannot render. "Presentation only" is therefore literal: an intent never costs the user a reachable answer, and the client — downstream of a wire boundary — leaves every request answerable.
+
+`imageReviewOf` keeps the same generic decision controls and prepends a source/candidate grid resolved through the conversation service. Acceptance remains disabled until every session-authorized attachment resolves and each browser image fires `load`; a missing or undecodable image leaves refusal available. The caller's `detail` carries the requested change and structural evidence. The intent and UI never infer semantic success: the caller owns the answer's durable effect on its existing Job or event log.
 
 Dismissal became its own model-facing outcome. `ASK_CANCELLED` previously reached the model as "the user cancelled ask_user_question", naming a tool it never called; `exit_plan_mode` now reports that the user dismissed the review to speak instead and to stay in plan mode and wait. Every other ask failure — an abort from turn cancel or provider teardown, where no user is coming — keeps its own message.
 
@@ -40,9 +42,13 @@ Dismissal became its own model-facing outcome. `ASK_CANCELLED` previously reache
 
 **Give `Chat about it` its own protocol outcome.** Rejected: dismissing a request is a verb the generic flow already has (the `×` that cancels the batch). Promoting it to a labelled button is presentation; inventing a fourth wire outcome for it is not.
 
+**Make image review its own pending kind or durable review store.** Rejected: the question protocol already carries the decision, while immutable attachment references authorize its evidence. A second pending registry would split cancellation and replay from the Job that produced the candidate.
+
+**Treat a distinct output hash as semantic success.** Rejected: a changed file proves only structural difference, not that requested text, regions, or objects changed correctly. The UI presents that limit explicitly and leaves the producing Job non-successful until the user confirms.
+
 ## Consequences
 
-The question protocol now carries a presentation axis. Adding a second intent is a tag on the union, a producer that sets it, a schema member, and a panel — no new frame, service, or answer shape. The cost is that the question contract knows presentation exists at all, and that `ui-user-questions` knows the word "plan"; both are the price of one entry owning every question surface.
+The question protocol carries a presentation axis. Adding another intent is a tag on the union, a producer that sets it, a schema member, and a renderer — no new frame, service, or answer shape. The cost is that the question contract knows presentation exists at all, and that `ui-user-questions` knows the evidence shape for the intents it renders; both are the price of one entry owning every question surface.
 
 The plan gate reads as a plan gate: the plan is the card's content, the verdict is two labelled buttons, and taking the turn back is a third. The generic flow is untouched for every other question, and its committed goldens did not move.
 
@@ -50,6 +56,6 @@ A deployment whose client half predates this change still shows the quiz layout 
 
 ## Testing
 
-`ui-user-questions` tests pin the narrowing (single-question batch, intent present, plan as detail, named approve label offered, binary single choice, decline absent when only approve is offered) and the panel (strip, markdown plan, accessible name, absence of pager/radio/skip/custom, approve and decline answering with the asker's labels, dismissal cancelling, one-shot latch with re-arm and message on a rejected receipt, tooltips present and absent, both locales). `user-questions` tests pin both `BAD_INTENT` rejections and intent pass-through; `plan-mode` tests pin the declared intent against its own option list and both failure messages; the apiproxy schema test pins wire acceptance and an unknown tag's rejection.
+`ui-user-questions` tests pin plan narrowing and panel behavior plus image-reference resolution, decode-before-acceptance, and load-failure refusal. `user-questions` tests pin `BAD_INTENT` rejection for option, detail, and immutable image bounds; `plan-mode` tests pin its declared intent against its own option list and both failure messages; the apiproxy schema tests pin both known wire tags, immutable SHA-256 image IDs, and unknown-tag rejection.
 
 The `plan-review` Web e2e lane records `/plan` entering plan mode for real, the model calling `exit_plan_mode`, the decision card taking the composer (asserting the generic flow did **not** claim the request), and the card's own Approve completing the turn — two keyless goldens, the waiting card and the approved transcript.

@@ -33,6 +33,8 @@ export interface IConversation {
    * cannot import makes a session's input inert with its own reason.
    */
   readonly blocks: ComposerBlocks
+  /** Resolve one session-authorized immutable image for feature-owned previews. */
+  resolveImage(sessionId: SessionId, attachment: ImageAttachmentRef): Promise<string>
   /**
    * Send a prompt into the caller scope's session (queued turn).
    * @param text - prompt text, sent verbatim as one text block.

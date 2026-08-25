@@ -17,8 +17,8 @@ import type { ScopeLayer } from '@deepseek-ai/dsh-scope'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { JobRegistry, JobId } from '@deepseek-ai/dsh-jobs'
 import type {
-  JobDoneListener, JobKind, JobOutcome, JobRead, JobSnapshot, JobStart, JobStatus,
-  JobsChangedListener,
+  JobAdmission, JobDoneListener, JobHooks, JobKind, JobOutcome, JobRead, JobSnapshot,
+  JobStart, JobStatus, JobsChangedListener,
 } from '@deepseek-ai/dsh-jobs'
 
 /** Timeout code that distinguishes a bounded wait from caller cancellation. */
@@ -26,6 +26,9 @@ export const TASK_WAIT_TIMEOUT = 'TASK_WAIT_TIMEOUT'
 
 /** Default maximum number of active jobs in one exact-owner bucket. */
 const DEFAULT_MAX_CONCURRENT_TASKS_PER_OWNER = 10
+
+/** Maximum number of waiting Jobs retained in one producer-kind FIFO. */
+const MAX_WAITING_TASKS_PER_KIND = 64
 
 /** Configuration for the process-local job registry. */
 export interface Config {
@@ -36,6 +39,19 @@ export interface Config {
   maxConcurrentJobsPerOwner?: number
 }
 
+/** Producer-admission state retained on the authoritative Job record. */
+type TaskPhase = {
+  state: 'waiting'
+  run: JobStart['run']
+  resolve: () => void
+  reject: (reason: unknown) => void
+  detachAbort: () => void
+} | {
+  state: 'started'
+} | {
+  state: 'settled'
+}
+
 /** The registry's mutable per-job record (never handed out — see {@link LocalJobRegistry.snapshot}). */
 interface TrackedTask {
   id: JobId
@@ -44,8 +60,10 @@ interface TrackedTask {
   outputLimitBytes: number | undefined
   /** Exact lifecycle owner; session-id authorization is derived from it. */
   owner: Agent | undefined
-  cancel: (reason?: string) => void
+  cancel: ((reason?: string) => void) | undefined
   readOutput: (() => string) | undefined
+  /** Private producer-admission phase; public lifecycle remains {@link status}. */
+  phase: TaskPhase
   status: JobStatus
   detail: string | undefined
   output: string | undefined
@@ -115,6 +133,10 @@ export class LocalJobRegistry extends JobRegistry {
    */
   private readonly layers = new ScopedLayers<JobLayer>(() => new JobLayer(), () => {})
   private listenersClosed = false
+  /** Opt-in FIFO ids keyed by kind; all mutable admission state stays on its Job. */
+  private readonly admissionQueues = new Map<JobKind, JobId[]>()
+  /** Synchronous cutoff that makes service teardown reject future and queued admission. */
+  private admissionsClosed = false
   /** Owner agents with attached scope cleanup, mapped to the exact disposer. */
   private ownerCleanups = new Map<Agent, () => Promise<void> | void>()
   /** Service context used by detached settlement continuations and teardown. */
@@ -129,25 +151,71 @@ export class LocalJobRegistry extends JobRegistry {
   }
 
   start(spec: JobStart): JobId {
-    if (!this.servesOwner(spec.owner)) {
-      throw new Error('background jobs unavailable: no job controller serves this agent (load @deepseek-ai/dsh-tool-jobs in its composition)')
-    }
-    if (spec.kind.length === 0) throw new Error('invalid job kind: expected a non-empty string')
-    if (spec.label.length === 0) throw new Error('invalid job label: expected a non-empty string')
-    if (spec.outputLimitBytes !== undefined
-      && (!Number.isSafeInteger(spec.outputLimitBytes) || spec.outputLimitBytes <= 0)) {
-      throw new Error(`invalid outputLimitBytes: expected a positive safe integer, got ${JSON.stringify(spec.outputLimitBytes)}`)
-    }
-    if (spec.owner !== undefined) this.ensureOwnerCleanup(spec.owner)
+    this.preflightStart(spec)
+    this.assertOwnerCapacity(spec.owner)
 
-    const active = this.activeTaskCount(spec.owner)
-    if (active >= this.maxConcurrentJobsPerOwner) {
+    const hooks = spec.run()
+    const job = this.createTask(spec, { state: 'started' }, hooks)
+    this.observeDone(job, hooks.done)
+
+    // Registration is complete and cannot fail from here, so the visible set
+    // has genuinely changed.
+    this.notifyChanged(job.owner)
+    return job.id
+  }
+
+  startWhenAvailable(spec: JobStart, signal?: AbortSignal): JobAdmission {
+    if (this.admissionsClosed) throw new Error('background job admission unavailable: jobs service disposed')
+    this.preflightStart(spec)
+    if (signal?.aborted) throw new Error('background job admission aborted')
+    // Waiting Jobs are real live records, so the existing owner limit applies
+    // before the narrower per-kind waiting bound.
+    this.assertOwnerCapacity(spec.owner)
+
+    const queue = this.admissionQueues.get(spec.kind) ?? []
+    if (queue.length >= MAX_WAITING_TASKS_PER_KIND) {
       throw new Error(
-        `background job limit reached for this owner (limit: ${this.maxConcurrentJobsPerOwner}); use job_kill to stop an unneeded job, wait for it to finish, then retry`,
+        `background job waiting limit reached for kind "${spec.kind}" (limit: ${MAX_WAITING_TASKS_PER_KIND}); cancel a waiting job or wait for admission, then retry`,
       )
     }
 
-    const hooks = spec.run()
+    let resolveAdmission!: () => void
+    let rejectAdmission!: (reason: unknown) => void
+    const admitted = new Promise<void>((resolve, reject) => {
+      resolveAdmission = resolve
+      rejectAdmission = reject
+    })
+    // Native kill and teardown can reject after the starter caller returns;
+    // observe that rejection internally while preserving it for caller awaits.
+    void admitted.catch(() => {})
+    const phase: Extract<TaskPhase, { state: 'waiting' }> = {
+      state: 'waiting',
+      run: spec.run.bind(spec),
+      resolve: resolveAdmission,
+      reject: rejectAdmission,
+      detachAbort: () => {},
+    }
+    const job = this.createTask(spec, phase)
+    if (signal !== undefined) {
+      const onAbort = (): void => {
+        this.cancelWaiting(
+          job,
+          new Error('background job admission aborted'),
+          { status: 'killed', detail: 'admission aborted' },
+        )
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      phase.detachAbort = () => signal.removeEventListener('abort', onAbort)
+    }
+    queue.push(job.id)
+    this.admissionQueues.set(spec.kind, queue)
+    this.notifyChanged(job.owner)
+    this.drainAdmissions(spec.kind)
+    return { id: job.id, admitted }
+  }
+
+  /** Allocate and publish one authoritative Job record. */
+  private createTask(spec: JobStart, phase: TaskPhase, hooks?: JobHooks): TrackedTask {
     const count = (this.counters.get(spec.kind) ?? 0) + 1
     this.counters.set(spec.kind, count)
     const id = JobId(`${spec.kind}-${count}`)
@@ -160,8 +228,9 @@ export class LocalJobRegistry extends JobRegistry {
       label: spec.label,
       outputLimitBytes: spec.outputLimitBytes,
       owner: spec.owner,
-      cancel: hooks.cancel.bind(hooks),
-      readOutput: hooks.readOutput?.bind(hooks),
+      cancel: hooks?.cancel.bind(hooks),
+      readOutput: hooks?.readOutput?.bind(hooks),
+      phase,
       status: 'running',
       detail: undefined,
       output: undefined,
@@ -174,8 +243,19 @@ export class LocalJobRegistry extends JobRegistry {
       waitResolvers: new Set(),
     }
     this.store.set(id, job)
+    return job
+  }
 
-    void hooks.done.then(
+  /** Install producer hooks and observe their terminal outcome. */
+  private installHooks(job: TrackedTask, hooks: JobHooks): void {
+    job.cancel = hooks.cancel.bind(hooks)
+    job.readOutput = hooks.readOutput?.bind(hooks)
+    this.observeDone(job, hooks.done)
+  }
+
+  /** Observe producer settlement after its authoritative Job record exists. */
+  private observeDone(job: TrackedTask, done: JobHooks['done']): void {
+    void done.then(
       (outcome) => { this.settle(job, outcome) },
       (error: unknown) => {
         // Contain a producer contract violation (`done` rejected) so cleanup and waiters cannot hang.
@@ -183,10 +263,28 @@ export class LocalJobRegistry extends JobRegistry {
         this.settle(job, { status: 'failed', detail: String(error) })
       },
     )
-    // Registration is complete and cannot fail from here, so the visible set
-    // has genuinely changed.
-    this.notifyChanged(job.owner)
-    return id
+  }
+
+  /** Shared validation and owner-lifecycle preflight for both start methods. */
+  private preflightStart(spec: JobStart): void {
+    if (!this.servesOwner(spec.owner)) {
+      throw new Error('background jobs unavailable: no job controller serves this agent (load @deepseek-ai/dsh-tool-jobs in its composition)')
+    }
+    if (spec.kind.length === 0) throw new Error('invalid job kind: expected a non-empty string')
+    if (spec.label.length === 0) throw new Error('invalid job label: expected a non-empty string')
+    if (spec.outputLimitBytes !== undefined
+      && (!Number.isSafeInteger(spec.outputLimitBytes) || spec.outputLimitBytes <= 0)) {
+      throw new Error(`invalid outputLimitBytes: expected a positive safe integer, got ${JSON.stringify(spec.outputLimitBytes)}`)
+    }
+    if (spec.owner !== undefined) this.ensureOwnerCleanup(spec.owner)
+  }
+
+  /** Enforce the existing exact-owner live Job limit before producer execution or id allocation. */
+  private assertOwnerCapacity(owner: Agent | undefined): void {
+    if (this.activeTaskCount(owner) < this.maxConcurrentJobsPerOwner) return
+    throw new Error(
+      `background job limit reached for this owner (limit: ${this.maxConcurrentJobsPerOwner}); use job_kill to stop an unneeded job, wait for it to finish, then retry`,
+    )
   }
 
   list(caller?: Agent): JobSnapshot[] {
@@ -219,7 +317,16 @@ export class LocalJobRegistry extends JobRegistry {
       job.reported = true
       return 'already-finished'
     }
+    if (job.phase.state === 'waiting') {
+      this.cancelWaiting(
+        job,
+        new Error(`background job admission cancelled before producer start${reason === undefined ? '' : `: ${reason}`}`),
+        { status: 'killed', ...reason === undefined ? {} : { detail: reason } },
+      )
+      return 'requested'
+    }
     // Cancel first so a throw leaves both lifecycle and notice state unchanged.
+    if (job.cancel === undefined) throw new Error(`job ${job.id} producer hooks unavailable`)
     job.cancel(reason)
     job.status = 'stopping'
     job.reported = true
@@ -327,6 +434,65 @@ export class LocalJobRegistry extends JobRegistry {
     return count
   }
 
+  /** Count producer-started live records across owners for one producer kind. */
+  private activeTaskCountForKind(kind: JobKind): number {
+    let count = 0
+    for (const job of this.store.values()) {
+      if (job.kind === kind && job.phase.state === 'started'
+        && (job.status === 'running' || job.status === 'stopping')) count += 1
+    }
+    return count
+  }
+
+  /** Start one FIFO Job once the kind's producer-started live count reaches zero. */
+  private drainAdmissions(kind: JobKind): void {
+    if (this.admissionsClosed || this.activeTaskCountForKind(kind) > 0) return
+    const queue = this.admissionQueues.get(kind)
+    if (queue === undefined) return
+    while (queue.length > 0 && this.activeTaskCountForKind(kind) === 0) {
+      const id = queue.shift()
+      if (id === undefined) break
+      const job = this.store.get(id)
+      if (job === undefined || job.phase.state !== 'waiting') continue
+      const phase = job.phase
+      phase.detachAbort()
+      job.phase = { state: 'started' }
+      try {
+        this.installHooks(job, phase.run())
+        phase.resolve()
+      } catch (error: unknown) {
+        job.reported = true
+        phase.reject(error)
+        this.settle(job, { status: 'failed', detail: String(error) })
+      }
+    }
+    this.dropEmptyAdmissionQueue(kind, queue)
+  }
+
+  /** Avoid retaining an empty per-kind lane after admission, abort, or teardown. */
+  private dropEmptyAdmissionQueue(kind: JobKind, queue: JobId[]): void {
+    if (queue.length === 0 && this.admissionQueues.get(kind) === queue) {
+      this.admissionQueues.delete(kind)
+    }
+  }
+
+  /** Settle one not-yet-started Job and remove its id from the FIFO. */
+  private cancelWaiting(job: TrackedTask, error: Error, outcome: JobOutcome): boolean {
+    if (job.phase.state !== 'waiting') return false
+    const phase = job.phase
+    const queue = this.admissionQueues.get(job.kind)
+    if (queue !== undefined) {
+      const index = queue.indexOf(job.id)
+      if (index >= 0) queue.splice(index, 1)
+      this.dropEmptyAdmissionQueue(job.kind, queue)
+    }
+    phase.detachAbort()
+    phase.reject(error)
+    job.reported = true
+    this.settle(job, outcome)
+    return true
+  }
+
   /**
    * The completion listeners that own `owner`'s notices: the global layer's
    * first, then each scoped layer along the owner's chain. A listener outside
@@ -415,6 +581,7 @@ export class LocalJobRegistry extends JobRegistry {
    */
   private settle(job: TrackedTask, outcome: JobOutcome): void {
     if (isTerminal(job.status)) return
+    job.phase = { state: 'settled' }
     job.status = outcome.status
     job.detail = outcome.detail
     job.output = outcome.output
@@ -426,6 +593,9 @@ export class LocalJobRegistry extends JobRegistry {
     for (const resolveWait of waitResolvers) resolveWait()
     job.markSettled()
     this.notifyChanged(job.owner)
+    // Terminal Job settlement, not producer-fiber or child-resource disposal,
+    // is the authority that releases the opt-in per-kind lane.
+    this.drainAdmissions(job.kind)
     if (this.listenersClosed) return
     for (const listener of this.listenersFor(job.owner)) {
       try {
@@ -466,6 +636,9 @@ export class LocalJobRegistry extends JobRegistry {
   /** Cancel, await terminal records, and drop every job owned by one exact agent lifecycle. */
   private async disposeOwned(owner: Agent): Promise<void> {
     const owned = [...this.store.values()].filter(job => job.owner === owner)
+    // Cancel every waiter while its started predecessor still holds the lane,
+    // so a throwing predecessor cancel cannot admit work into a disposing owner.
+    this.cancelForTeardown(owned.filter(job => job.phase.state === 'waiting'), 'owner disposed')
     this.cancelForTeardown(owned, 'owner disposed')
     await Promise.all(owned.map(job => job.settled))
     for (const job of owned) this.store.delete(job.id)
@@ -482,6 +655,7 @@ export class LocalJobRegistry extends JobRegistry {
     // The flag is the whole guard: each layer entry's undo belongs to the fiber
     // that registered it, so this service may not drop them on its own way out.
     this.listenersClosed = true
+    this.admissionsClosed = true
     const all = [...this.store.values()]
     this.cancelForTeardown(all, 'jobs service disposed')
     await Promise.all(all.map(job => job.settled))
@@ -515,7 +689,16 @@ export class LocalJobRegistry extends JobRegistry {
       // record too, so a throwing cancel must not be the one path that
       // announces an unreported completion into a disposing owner.
       job.reported = true
+      if (job.phase.state === 'waiting') {
+        this.cancelWaiting(
+          job,
+          new Error(`background job admission unavailable: ${reason}`),
+          { status: 'killed', detail: reason },
+        )
+        continue
+      }
       try {
+        if (job.cancel === undefined) throw new Error('producer hooks unavailable')
         job.cancel(reason)
         job.status = 'stopping'
         // Teardown reaches settlement only after the producer releases, which a
