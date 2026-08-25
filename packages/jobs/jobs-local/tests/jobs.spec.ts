@@ -433,6 +433,28 @@ describe('LocalJobRegistry.startWhenAvailable', () => {
     await tick()
   })
 
+  it('calls a queued starter with its original spec receiver', async () => {
+    const ctx = await harness()
+    const first = producer({ kind: 'emate-image' })
+    const firstAdmission = ctx.jobs.startWhenAvailable(first.spec)
+    await firstAdmission.admitted
+    const second = producer({ kind: 'emate-image' })
+    const spec: JobStart & { marker: string } = {
+      ...second.spec,
+      marker: 'original spec',
+      run() {
+        expect(this).toBe(spec)
+        return second.spec.run()
+      },
+    }
+    const secondAdmission = ctx.jobs.startWhenAvailable(spec)
+
+    first.settle({ status: 'completed' })
+    await secondAdmission.admitted
+    second.settle({ status: 'completed' })
+    await tick()
+  })
+
   it('checks the owner limit before rejecting a kind\'s 65th waiting Job without id allocation or producer execution', async () => {
     const ctx = await harness({ maxConcurrentJobsPerOwner: 1 })
     const activeOwner = stubAgent(ctx, 'capacity-active')
@@ -1110,6 +1132,47 @@ describe('LocalJobRegistry owner cleanup', () => {
     expect(seen).toHaveLength(1)
     expect(seen[0]?.status).toBe('failed')
     expect(seen[0]?.detail).toContain('cancel threw during teardown')
+    expect(ctx.jobs.list(owner)).toEqual([])
+  })
+
+  it('cancels waiting Jobs before a throwing active cancel can admit them during owner disposal', async () => {
+    const ctx = await harness()
+    vi.spyOn(ctx.logger, 'warn').mockImplementation(() => {})
+    const owner = stubAgent(ctx, 'owner')
+    ctx.agents.register(owner)
+    const active = ctx.jobs.startWhenAvailable({
+      kind: 'emate-image',
+      label: 'active image',
+      owner,
+      run: () => ({
+        cancel() { throw new Error('cancel boom') },
+        done: new Promise(() => {}),
+      }),
+    })
+    await active.admitted
+    let settleWaiting!: (outcome: JobOutcome) => void
+    const waitingRun = vi.fn(() => ({
+      cancel() {},
+      done: new Promise<JobOutcome>((resolve) => { settleWaiting = resolve }),
+    }))
+    const waiting = ctx.jobs.startWhenAvailable({
+      kind: 'emate-image', label: 'must stay waiting', owner, run: waitingRun,
+    })
+
+    const drain = disposeAgentScope(owner)
+    let drained = false
+    void drain.then(() => { drained = true })
+    await tick()
+    const drainedWithoutStartingWaiter = drained
+    if (!drainedWithoutStartingWaiter) {
+      settleWaiting({ status: 'killed' })
+      await drain
+    }
+    const admission = await Promise.allSettled([waiting.admitted])
+
+    expect(drainedWithoutStartingWaiter).toBe(true)
+    expect(waitingRun).not.toHaveBeenCalled()
+    expect(admission).toMatchObject([{ status: 'rejected' }])
     expect(ctx.jobs.list(owner)).toEqual([])
   })
 })
