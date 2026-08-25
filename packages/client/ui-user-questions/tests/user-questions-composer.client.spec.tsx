@@ -34,6 +34,7 @@ const kit = {
   useProjection: (() => undefined) as never,
   useInput: (() => { throw new Error('unused') }) as never,
   inputActions: { setDraft: () => { throw new Error('unused') }, submit: () => { throw new Error('unused') } } as never,
+  loadImage: vi.fn(() => Promise.reject(new Error('unused'))),
   // The seat's key domain is question ∪ common.
   t: seatOver(zh, commonZh),
 }
@@ -142,6 +143,72 @@ describe('QuestionComposer', () => {
     expect(view.container.querySelector('strong')?.textContent).toBe('先验证')
     expect(view.container.querySelector('code')?.textContent).toBe('QuestionComposer')
     expect(view.container.querySelectorAll('li')).toHaveLength(2)
+  })
+
+  it('shows session-authorized image review media and gates acceptance on both previews loading', async () => {
+    const respond = vi.fn(() => Promise.resolve<RpcReceipt>({ accepted: true }))
+    const source = {
+      attachmentId: `sha256:${'a'.repeat(64)}`, mediaType: 'image/png' as const,
+      bytes: 10, width: 20, height: 30,
+    }
+    const output = {
+      attachmentId: `sha256:${'b'.repeat(64)}`, mediaType: 'image/png' as const,
+      bytes: 11, width: 20, height: 30,
+    }
+    const carrier = new PendingWait('question', RpcId('image-review'), SID, {
+      questions: [{
+        id: 'review', question: '确认改图结果吗？', detail: '目标：删除左上角标识。\n\n结构证据：输出 SHA 与源图不同。',
+        options: [{ label: '确认结果' }, { label: '拒绝结果' }],
+        intent: { kind: 'image-review', approve: '确认结果', sources: [source], output },
+      }],
+    }, respond)
+    const loadImage = vi.fn<QuestionComposerProps['loadImage']>(
+      async attachment => `blob:${attachment.attachmentId}`,
+    )
+    render(<QuestionComposer
+      matched={carrier} interactions={[carrier]} {...kit} loadImage={loadImage}
+    />)
+
+    const sourcePreview = await screen.findByRole('img', { name: '源图 1' })
+    const outputPreview = screen.getByRole('img', { name: '候选结果' })
+    expect(sourcePreview.getAttribute('src')).toBe(`blob:${source.attachmentId}`)
+    expect(outputPreview.getAttribute('src')).toBe(`blob:${output.attachmentId}`)
+    expect(screen.getByRole<HTMLButtonElement>('radio', { name: '确认结果' }).disabled).toBe(true)
+    fireEvent.load(sourcePreview)
+    fireEvent.load(outputPreview)
+    expect(screen.getByRole<HTMLButtonElement>('radio', { name: '确认结果' }).disabled).toBe(false)
+    expect(loadImage.mock.calls.map(call => call[0].attachmentId)).toEqual([
+      source.attachmentId, output.attachmentId,
+    ])
+
+    fireEvent.click(screen.getByRole('radio', { name: '确认结果' }))
+    fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    expect(respond).toHaveBeenCalledWith(answeredEnvelope('image-review', [
+      { id: 'review', selected: ['确认结果'] },
+    ]))
+  })
+
+  it('keeps acceptance disabled when an image-review attachment cannot be loaded', async () => {
+    const source = {
+      attachmentId: `sha256:${'a'.repeat(64)}`, mediaType: 'image/png' as const,
+      bytes: 10, width: 20, height: 30,
+    }
+    const output = { ...source, attachmentId: `sha256:${'b'.repeat(64)}` }
+    const carrier = new PendingWait('question', RpcId('image-review-failed'), SID, {
+      questions: [{
+        id: 'review', question: '确认改图结果吗？', detail: '目标要求',
+        options: [{ label: '确认结果' }, { label: '拒绝结果' }],
+        intent: { kind: 'image-review', approve: '确认结果', sources: [source], output },
+      }],
+    }, vi.fn())
+    render(<QuestionComposer
+      matched={carrier} interactions={[carrier]} {...kit}
+      loadImage={vi.fn(() => Promise.reject(new Error('missing')))}
+    />)
+
+    expect((await screen.findByRole('alert')).textContent).toContain('图片加载失败')
+    expect(screen.getByRole<HTMLButtonElement>('radio', { name: '确认结果' }).disabled).toBe(true)
+    expect(screen.getByRole<HTMLButtonElement>('radio', { name: '拒绝结果' }).disabled).toBe(false)
   })
 
   it('skips individual questions without discarding earlier answers', () => {

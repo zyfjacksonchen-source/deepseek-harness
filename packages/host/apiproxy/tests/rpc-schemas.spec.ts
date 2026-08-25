@@ -493,6 +493,21 @@ describe('events frame schemas', () => {
     for (const invalid of [{ kind: 'plan-review' }, { kind: 'poll', approve: 'Approve' }, { approve: 'Approve' }]) {
       expect(() => askUserQuestionItemSchema.parse({ id: 'q', question: 'Q?', intent: invalid })).toThrow()
     }
+    const source = {
+      attachmentId: `sha256:${'a'.repeat(64)}`, mediaType: 'image/png', bytes: 10, width: 20, height: 30,
+    }
+    const imageIntent = {
+      kind: 'image-review', approve: 'Accept', sources: [source],
+      output: { ...source, attachmentId: `sha256:${'b'.repeat(64)}` },
+    }
+    expect(askUserQuestionItemSchema.parse({
+      id: 'image-review', question: 'Accept?', detail: 'Evidence',
+      options: [{ label: 'Accept' }], intent: imageIntent,
+    }).intent).toEqual(imageIntent)
+    for (const invalid of [
+      { ...imageIntent, sources: [] },
+      { ...imageIntent, output: { ...imageIntent.output, attachmentId: 'bad' } },
+    ]) expect(() => askUserQuestionItemSchema.parse({ id: 'q', question: 'Q?', intent: invalid })).toThrow()
   })
 
   it('accepts every queue placement and rejects unknown placements', () => {

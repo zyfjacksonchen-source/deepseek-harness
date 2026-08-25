@@ -12,7 +12,7 @@ Status: implemented
 
 ## 决策
 
-一个问题可以声明**呈现意图（presentation intent）**，Web 输入区把已声明的意图渲染为它自己的界面。`AskUserQuestionItem` 新增 `intent?: AskUserQuestionIntent`，这是一个带标签的联合，目前唯一成员是 `{ kind: 'plan-review', approve: string }`；`plan-mode` 在审阅问题上设置它，并指明 `Approve` 是表示批准的标签。
+一个问题可以声明**呈现意图（presentation intent）**，Web 输入区把已声明的意图渲染为它自己的界面。`AskUserQuestionItem` 携带 `intent?: AskUserQuestionIntent`，这是一个带标签的联合，包含 `{ kind: 'plan-review', approve: string }` 与 `{ kind: 'image-review', approve: string, sources: ImageAttachmentRef[], output: ImageAttachmentRef }`。`plan-mode` 在审阅问题上设置前者，并指明 `Approve` 是表示批准的标签。图片生产调用方只有在把不可变源图和候选图引用持久附加到该问题所属 Session 后，才设置后者。
 
 意图只改变呈现。回答协议不变：遵循意图的 UI 回答的仍是通用 UI 会发送的那些选项标签，因此无论由哪个界面收集，`exit_plan_mode` 读到的都是同一组回答字段；而不认识某个标签的 UI 渲染通用流程，除布局之外一无所失。
 
@@ -21,6 +21,8 @@ Status: implemented
 `ui-user-questions` 把该意图渲染为 `PlanReviewPanel`，沿用等待审批卡片的语言：琥珀色条带写着 `Plan review`，计划是可滚动的 markdown 主体，决定行放三个操作 —— `Chat about it`、`Refuse`、`Approve`。问题文本成为卡片的无障碍名称而非标题，因为按钮已经说明了这次决定是什么。Approve 与 Refuse 用提问方自己的选项标签回答，并把提问方的描述保留为 tooltip；`Chat about it` 取消该请求，从而让输入区归位，用户直接说他想说的话即可。所有文案在既有 `question` 命名空间下双语。
 
 路由住在单一输入区条目内部（由 `QuestionComposer` 选择呈现），而不是第二个链式注册；`planReviewOf` 仅在卡片能够发出该请求允许的每一个答案时才接管：只有一个问题且声明了意图、以 `detail` 承载计划、提供了被指名的批准标签，且是二元单选 —— 除批准外最多一个选项，且非多选。出现第三个选项或多选批次时，其答案是两个按钮无法表达的，通用流程保留它，也保留其他任何卡片渲染不了的请求。因此「只改变呈现」是字面意义上的：意图绝不让用户失去一个可达的答案，而位于协议边界下游的客户端让每个请求都保持可回答。
+
+`imageReviewOf` 保留同一套通用决定控件，并在其前面加入由会话服务解析的源图/候选图网格。所有经会话授权的附件都完成解析且每个浏览器图片触发 `load` 前，确认保持禁用；图片缺失或无法解码时仍可拒绝。调用方的 `detail` 携带修改目标与结构化证据。该意图和 UI 均不推断语义成功：调用方负责把答案持久作用到其既有 Job 或事件日志。
 
 放弃审阅成为面向模型的独立结果。`ASK_CANCELLED` 以前传到模型的是「the user cancelled ask_user_question」，指名了一个它从未调用的工具；现在 `exit_plan_mode` 报告用户放弃审阅是为了改用说话，并要求留在 plan mode 中等待。其余每一种 ask 失败 —— 轮次取消或提供方 teardown导致的中止，那里并没有用户会来 —— 保留它们自己的消息。
 
@@ -40,9 +42,13 @@ Status: implemented
 
 **给 `Chat about it` 自己的协议结果。** 否决：放弃一个请求是通用流程已有的动词（取消整批的 `×`）。把它提升为带标签的按钮属于呈现；为它发明第四种协议结果不属于。
 
+**让图片审核成为自己的待处理种类或持久审核存储。** 否决：问题协议已经承载决定，而不可变附件引用已授权其证据。第二个待处理注册表会把取消与回放从生产候选图的 Job 中拆开。
+
+**把不同的输出 hash 当作语义成功。** 否决：文件发生变化只能证明结构差异，不能证明要求的文字、区域或对象已经正确修改。UI 明确展示这一限制，在用户确认前，生产图片的 Job 不会成为成功状态。
+
 ## 结果
 
-问题协议从此带有一个呈现轴。新增第二个意图 = 联合上的一个标签、一个设置它的生产方、一个 schema 成员、一个面板 —— 不需要新的帧、服务或回答形状。代价是问题约定从此知道「呈现」这件事存在，且 `ui-user-questions` 知道「plan」这个词；两者都是由单一条目拥有全部问题界面所要付的价钱。
+问题协议带有一个呈现轴。新增另一个意图 = 联合上的一个标签、一个设置它的生产方、一个 schema 成员、一个渲染器 —— 不需要新的帧、服务或回答形状。代价是问题约定知道「呈现」这件事存在，且 `ui-user-questions` 知道它所渲染意图的证据形状；两者都是由单一条目拥有全部问题界面所要付的价钱。
 
 计划关口读起来就像计划关口：计划是卡片的内容，裁决是两个带标签的按钮，把轮次拿回来是第三个。通用流程对其他每个问题都未受影响，其已提交的 golden 也没有变动。
 
@@ -50,6 +56,6 @@ Status: implemented
 
 ## 测试
 
-`ui-user-questions` 测试钉住收窄（单问题批、意图存在、计划作为 detail、被指名的批准标签确实被提供、二元单选、只提供批准时 decline 缺席）与面板（条带、markdown 计划、无障碍名称、不显示分页器、单选行、跳过项和自定义项、批准与拒绝用提问方的标签回答、放弃触发取消、一次性闭锁，以及在回执被拒时重新武装并给出消息、tooltip 有与无、两种语言）。`user-questions` 测试钉住两种 `BAD_INTENT` 拒绝与意图透传；`plan-mode` 测试钉住已声明的意图与其自身选项列表的一致、以及两条失败消息；apiproxy schema 测试钉住协议接受与未知标签的拒绝。
+`ui-user-questions` 测试钉住计划收窄和面板行为，以及图片引用解析、解码完成前禁止确认和加载失败时仍可拒绝。`user-questions` 测试钉住选项、detail 与不可变图片边界对应的 `BAD_INTENT` 拒绝；`plan-mode` 测试钉住已声明意图与其自身选项列表的一致及两条失败消息；apiproxy schema 测试钉住两个已知协议标签、不可变 SHA-256 图片 ID 与未知标签拒绝。
 
 `plan-review` Web e2e 通道录制了 `/plan` 真实进入 plan mode、模型调用 `exit_plan_mode`、决定卡片接管输入区（并断言通用流程**没有**接管该请求）、以及卡片自身的 Approve 完成该轮 —— 两份无密钥 golden：等待中的卡片与批准后的 transcript（文本记录）。

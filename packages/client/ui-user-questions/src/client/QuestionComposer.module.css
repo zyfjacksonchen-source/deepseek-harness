@@ -95,6 +95,44 @@
   margin: 0 2px 8px;
 }
 
+.reviewMedia {
+  margin: 12px 24px 4px;
+}
+
+.reviewGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.reviewFigure {
+  min-width: 0;
+  margin: 0;
+}
+
+.reviewFigure figcaption,
+.reviewLoading,
+.reviewError {
+  margin-bottom: 6px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.reviewFigure img {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+.reviewError {
+  color: var(--dsw-alias-state-error-primary);
+}
+
 .footerActions {
   display: flex;
   align-items: center;

@@ -23,18 +23,20 @@ async function bench() {
     () => null,
   )
   ctx.provide('locale', new LocaleRuntime(ctx))
+  ctx.provide('conversation', { resolveImage: () => Promise.reject(new Error('unused')) } as never)
   return { ctx, slots }
 }
 
 describe('apply', () => {
   it('declares the services it binds', () => {
-    expect(inject).toEqual(['slots', 'locale'])
+    expect(inject).toEqual(['slots', 'locale', 'conversation'])
   })
 
   it('waits until a live entry declares the composer slot', async () => {
     const ctx = new Context()
     await ctx.plugin(SlotRegistry).await()
     ctx.provide('locale', new LocaleRuntime(ctx))
+    ctx.provide('conversation', { resolveImage: () => Promise.reject(new Error('unused')) } as never)
     const fiber = ctx.plugin({ inject: [...inject], apply })
     await fiber.await()
     expect(ctx.slots.entries('conversation.composer')).toHaveLength(0)
@@ -46,14 +48,12 @@ describe('apply', () => {
     expect(ctx.slots.entries('conversation.composer')).toHaveLength(1)
   })
 
-  it('registers the question entry: routing selector, no inject face', async () => {
+  it('registers the question entry with the conversation-owned image loader', async () => {
     const { ctx, slots } = await bench()
     await ctx.plugin({ inject: [...inject], apply }).await()
     const entry = slots.entries('conversation.composer')[0]!
     expect(entry.component).toBe(QuestionComposer)
-    // The whole behavior surface rides the matched carrier: no business face;
-    // copy rides the standard locale seat.
-    expect(entry.inject).toBeUndefined()
+    expect(entry.inject).toBeTypeOf('function')
     expect(entry.locale).toBe('question')
     // The selector narrows the chain currency: question wait in → that wait; none → null.
     const select = entry.select as (owner: { interactions: readonly { kind: string }[] }) => unknown
