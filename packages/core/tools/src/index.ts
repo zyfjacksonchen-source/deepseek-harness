@@ -5,6 +5,7 @@
  */
 
 import { Context, Service } from '@deepseek-ai/cordis'
+import type { Fiber } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { AnonymousEntries, NamedEntries, ScopedLayers, scopeOf, scopeTarget } from '@deepseek-ai/dsh-scope'
 import type { ScopeKey, ScopeLayer, Scoped } from '@deepseek-ai/dsh-scope'
@@ -684,6 +685,35 @@ export interface ToolRestriction {
   readonly deny?: readonly string[]
 }
 
+/** Loader-owned identity snapshotted when the visible tool winner registered. */
+export interface ToolRegistrationProvenance {
+  /** Exact module specifier from the registration fiber's Loader entry. */
+  readonly moduleSpecifier: string
+  /** Cordis plugin name of the registration fiber. */
+  readonly pluginName: string
+}
+
+/** One tool and its optional Loader identity in the same registry entry. */
+interface RegisteredTool {
+  readonly definition: ToolDefinition
+  readonly provenance: ToolRegistrationProvenance | undefined
+}
+
+/** The only Loader surface used by tools; keeps Loader an optional host concern. */
+type LoaderBackedFiber = Fiber & {
+  readonly entry?: { readonly options: { readonly name: string } }
+}
+
+/** Copy Loader identity at registration so later Entry mutation cannot drift it. */
+function captureRegistrationProvenance(ctx: Context): ToolRegistrationProvenance | undefined {
+  const fiber = ctx.fiber as LoaderBackedFiber
+  if (fiber.entry === undefined) return undefined
+  return Object.freeze({
+    moduleSpecifier: fiber.entry.options.name,
+    pluginName: fiber.name,
+  })
+}
+
 /** One restriction compiled at registration for repeated live-global lookup. */
 interface CompiledToolRestriction {
   readonly allow?: ReadonlySet<string>
@@ -692,8 +722,8 @@ interface CompiledToolRestriction {
 
 /** One scope's complete registry view, derived in a single layer traversal. */
 interface ToolView {
-  /** Visible definitions after restrictions, scoped shadowing, and transport insertion. */
-  readonly visible: ReadonlyMap<string, ToolDefinition>
+  /** Visible registry winners after restrictions, scoped shadowing, and transport insertion. */
+  readonly visible: ReadonlyMap<string, RegisteredTool>
   /** Pre-restriction capability names used by prompt-order validation. */
   readonly knownNames: ReadonlySet<string>
   /** Current global names that a scoped restriction may name. */
@@ -712,7 +742,7 @@ export type ToolGuard = (execution: Readonly<ToolExecution>) => string | undefin
 
 /** One scope's complete tool-registry contribution. */
 class ToolLayer implements ScopeLayer {
-  readonly tools: NamedEntries<ToolDefinition>
+  readonly tools: NamedEntries<RegisteredTool>
   readonly restrictions = new AnonymousEntries<CompiledToolRestriction>()
   readonly guards = new AnonymousEntries<ToolGuard>()
   /**
@@ -821,7 +851,7 @@ export class ToolRuntime extends Service {
    * a code mode is no longer known when the service is constructed, and the
    * transport is stateless beyond its closures over `this`.
    */
-  private codeTransport: ToolDefinition | undefined
+  private codeTransport: RegisteredTool | undefined
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx, 'tools')
@@ -919,16 +949,19 @@ export class ToolRuntime extends Service {
    * and only for scopes whose mode actually presents it.
    * @returns the shared transport definition.
    */
-  private requireCodeTransport(): ToolDefinition {
-    this.codeTransport ??= createRunCodeTool(this, {
-      requireRuntime: () => this.requireCodeRuntime(this.defaultMode),
-      // The language-aware description/parameters getters read the runtime
-      // without demanding one, so a native-default process can still project
-      // the transport for an agent that chose code.
-      peekRuntime: () => this.ctx.get('codeRuntime'),
-      maxParallel: this.maxParallelSubCalls,
-      shapeDispatchLog: dispatch => this.shapeDispatchLog(dispatch),
-    })
+  private requireCodeTransport(): RegisteredTool {
+    this.codeTransport ??= {
+      definition: createRunCodeTool(this, {
+        requireRuntime: () => this.requireCodeRuntime(this.defaultMode),
+        // The language-aware description/parameters getters read the runtime
+        // without demanding one, so a native-default process can still project
+        // the transport for an agent that chose code.
+        peekRuntime: () => this.ctx.get('codeRuntime'),
+        maxParallel: this.maxParallelSubCalls,
+        shapeDispatchLog: dispatch => this.shapeDispatchLog(dispatch),
+      }),
+      provenance: undefined,
+    }
     return this.codeTransport
   }
 
@@ -981,7 +1014,7 @@ export class ToolRuntime extends Service {
     const view = this.view(scope)
     const mode = this.modeFor(scope)
     if (mode === 'native') {
-      const schemas = [...view.visible.values()].map(definition => this.schemaOf(definition, false))
+      const schemas = [...view.visible.values()].map(tool => this.schemaOf(tool.definition, false))
       return { schemas, knownNames: [...view.knownNames] }
     }
     // Validate the runtime language BEFORE projecting schemas: schemaOf reads
@@ -990,7 +1023,7 @@ export class ToolRuntime extends Service {
     // renderer-table rejection the canonical assembly-time error for a
     // language with no SDK renderer.
     this.requireCodeRuntime(mode)
-    const schemas = [...view.visible.values()].map(definition => this.schemaOf(definition, false))
+    const schemas = [...view.visible.values()].map(tool => this.schemaOf(tool.definition, false))
     if (mode === 'code') {
       return {
         schemas: schemas.filter(schema => schema.name === RUN_CODE_NAME),
@@ -1054,9 +1087,13 @@ export class ToolRuntime extends Service {
     if (name === RUN_CODE_NAME) {
       throw new Error(`tool name "${RUN_CODE_NAME}" is reserved for the Code Mode presentation transport and cannot be registered or shadowed`)
     }
+    const tool: RegisteredTool = {
+      definition,
+      provenance: captureRegistrationProvenance(this.ctx),
+    }
     return this.layers.effect(
       this.ctx,
-      layer => layer.tools.insert(name, definition),
+      layer => layer.tools.insert(name, tool),
       { label: 'tools.register()' },
     )
   }
@@ -1158,27 +1195,27 @@ export class ToolRuntime extends Service {
     const own = this.layers.peek(scope)
     // Inherited surface, nearest ancestor last: a nearer scope's same-name
     // entry shadows a farther one, and the global layer is the farthest.
-    const inherited = new Map<string, ToolDefinition>(this.layers.global.tools.entries())
+    const inherited = new Map<string, RegisteredTool>(this.layers.global.tools.entries())
     for (const layer of layers) {
       if (layer === own) continue
-      for (const [name, definition] of layer.tools.entries()) inherited.set(name, definition)
+      for (const [name, tool] of layer.tools.entries()) inherited.set(name, tool)
     }
-    const visible = new Map<string, ToolDefinition>()
+    const visible = new Map<string, RegisteredTool>()
     const knownNames = new Set<string>()
     const restrictableNames = new Set<string>()
-    for (const [name, definition] of inherited) {
+    for (const [name, tool] of inherited) {
       knownNames.add(name)
       restrictableNames.add(name)
       // Restrictions intersect across the whole chain: any scope on it may
       // mask an inherited name for everything nested inside it.
-      if (layers.every(layer => layer.admits(name))) visible.set(name, definition)
+      if (layers.every(layer => layer.admits(name))) visible.set(name, tool)
     }
     // The scope's own registrations last, shadowing an inherited name and
     // outside the filter above.
     if (own !== undefined) {
-      for (const [name, definition] of own.tools.entries()) {
+      for (const [name, tool] of own.tools.entries()) {
         knownNames.add(name)
-        visible.set(name, definition)
+        visible.set(name, tool)
       }
     }
     // Presentation infrastructure is resolved last and outside capability
@@ -1202,7 +1239,20 @@ export class ToolRuntime extends Service {
    * @returns the definition the scope resolves, or undefined when none is visible.
    */
   get(name: string, scope?: ScopeKey): ToolDefinition | undefined {
-    return this.view(scope).visible.get(name)
+    return this.view(scope).visible.get(name)?.definition
+  }
+
+  /**
+   * Read the Loader identity captured by the tool registration currently
+   * visible to one scope. Scoped shadows and restrictions use the same winner
+   * as {@link get}; direct registrations without a Loader entry are
+   * intentionally unattributed, and never fall back to a hidden registration.
+   * @param name - the tool name as registered.
+   * @param scope - the viewing scope (the agent); omitted = the global view.
+   * @returns the visible winner's frozen registration identity, or undefined.
+   */
+  provenance(name: string, scope?: ScopeKey): ToolRegistrationProvenance | undefined {
+    return this.view(scope).visible.get(name)?.provenance
   }
 
   /**
@@ -1232,12 +1282,13 @@ export class ToolRuntime extends Service {
    * @returns one deep-cloned schema per visible tool.
    */
   schemas(scope?: ScopeKey): ToolSchema[] {
-    return [...this.view(scope).visible.values()].map(definition => this.schemaOf(definition, true))
+    return [...this.view(scope).visible.values()].map(tool => this.schemaOf(tool.definition, true))
   }
 
   /** Project visible callable tools onto the generated Code Mode SDK contract. */
   private sdkSchemas(scope?: ScopeKey): ToolSdkSchema[] {
     return [...this.view(scope).visible.values()]
+      .map(tool => tool.definition)
       .filter(definition => definition.name !== RUN_CODE_NAME)
       .map((definition): ToolSdkSchema => {
         const output = snapshotJsonValue(definition.output.schema)

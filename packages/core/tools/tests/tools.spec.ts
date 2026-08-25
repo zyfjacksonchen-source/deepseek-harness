@@ -9,6 +9,7 @@ import ToolRuntime, {
   TOOL_ABORTED, TOOL_ABORTED_BEFORE_DISPATCH,
   type InferArgs, type JsonValue, type ParameterSchemaSpec, type PreToolDecision, type PostToolDecision,
   type JsonSchemaNode, type ToolDefinition, type ToolDispatchExecution, type ToolExecutionResult, type ToolExecutionToken,
+  type ToolRegistrationProvenance,
 } from '@deepseek-ai/dsh-tools'
 
 const testToolSignal = new AbortController().signal
@@ -46,6 +47,10 @@ describe('ToolRuntime', () => {
     // schemas() result must not leak execute — ToolSchema deliberately has no
     // 'execute' key, so widen through unknown to probe for the absent property
     expect((ctx.tools.schemas()[0] as unknown as Record<string, unknown>).execute).toBeUndefined()
+    expect(ctx.tools.provenance('echo')).toBeUndefined()
+    expect(ctx.tools.provenance('unknown')).toBeUndefined()
+    expectTypeOf(ctx.tools.provenance('echo')).toEqualTypeOf<ToolRegistrationProvenance | undefined>()
+    expect(JSON.stringify(ctx.tools.schemas())).not.toContain('moduleSpecifier')
 
     const assembly = await ctx.systemPrompt.assemble()
     expect(assembly.tools.map(t => t.name)).toEqual(['echo'])
@@ -1984,9 +1989,11 @@ describe('ToolRuntime', () => {
       inner.tools.register({ ...echoTool, name: 'scoped' })
     }, { inject: ['tools'] }))
     expect(ctx.tools.schemas().map(t => t.name)).toEqual(['echo', 'scoped'])
+    expect(ctx.tools.provenance('scoped')).toBeUndefined()
 
     await fiber.dispose()
     expect(ctx.tools.schemas().map(t => t.name)).toEqual(['echo'])
+    expect(ctx.tools.provenance('scoped')).toBeUndefined()
   })
 
   it('returns a callable disposer from register() that unregisters the tool', async () => {
@@ -1995,9 +2002,11 @@ describe('ToolRuntime', () => {
 
     const dispose = ctx.tools.register({ ...echoTool, name: 'disposable' })
     expect(ctx.tools.schemas().map(t => t.name)).toEqual(['echo', 'disposable'])
+    expect(ctx.tools.provenance('disposable')).toBeUndefined()
 
     dispose()
     expect(ctx.tools.schemas().map(t => t.name)).toEqual(['echo'])
+    expect(ctx.tools.provenance('disposable')).toBeUndefined()
   })
 
   it('rolls back the tool entry when a tools/change listener throws (P1-1)', async () => {

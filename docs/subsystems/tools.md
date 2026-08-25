@@ -150,6 +150,20 @@ type InferArgs<S> = InferProperties<S, []>
 
 Registration is a trusted same-process contract. The registry borrows the typed definition as readonly input, requires `output`, validates its raw schema, and checks semantic requirements such as a positive finite `timeoutMs`; `schemas()` constructs the model-facing projection when building a request, so execution and presentation share one resolved definition without leaking callbacks onto the wire.
 
+## `ToolRegistrationProvenance` — the visible registration's Loader identity
+
+`provenance(name, scope?)` reads the same resolved registry entry as `get()`. `register()` copies the calling Cordis fiber's actual Loader entry module specifier and plugin fiber name into that entry once; the frozen snapshot shares the definition's effect teardown and cannot drift when a mutable Loader Entry changes later. Without a Loader entry there is no attribution. A restriction, shadow, HMR replacement, or disposal therefore changes the answer only by changing the actual visible winner; lookup never scans Loader state or falls back to a hidden registration. The host-only value is not included in model schemas, prompt assembly, or session wire data, and is origin evidence rather than an authorization claim.
+
+```ts type-equiv
+/** Loader-owned identity snapshotted when the visible tool winner registered. */
+interface ToolRegistrationProvenance {
+  /** Exact module specifier from the registration fiber's Loader entry. */
+  readonly moduleSpecifier: string
+  /** Cordis plugin name of the registration fiber. */
+  readonly pluginName: string
+}
+```
+
 ## `ToolRestriction` — one scope's live filter over what it inherits
 
 `ToolRestriction` applies to the tools a scope inherits: the deployment-global layer plus every ancestor scope on its chain. The registry compiles readonly names into private sets, intersects multiple restrictions, then overlays the scope's OWN registrations, which stay exempt so a delegated child keeps the tools it answers through. A deny-only filter admits later unlisted inherited tools, while an allow-list excludes them.
@@ -536,6 +550,17 @@ guard(guard: ToolGuard): () => void
 get(name: string, scope?: ScopeKey): ToolDefinition | undefined
 
 /**
+ * Read the Loader identity captured by the tool registration currently
+ * visible to one scope. Scoped shadows and restrictions use the same winner
+ * as {@link get}; direct registrations without a Loader entry are
+ * intentionally unattributed, and never fall back to a hidden registration.
+ * @param name - the tool name as registered.
+ * @param scope - the viewing scope (the agent); omitted = the global view.
+ * @returns the visible winner's frozen registration identity, or undefined.
+ */
+provenance(name: string, scope?: ScopeKey): ToolRegistrationProvenance | undefined
+
+/**
  * Project visible definitions onto the allowlisted model-facing schema fields,
  * excluding execution and presentation callbacks.
  * @param scope - the viewing scope (the agent); omitted = the global view.
@@ -571,7 +596,7 @@ async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>
 
 Types: [ScopeKey](scope.md)
 
-Source: [`packages/core/tools/src/index.ts:787`](../../packages/core/tools/src/index.ts)
+Source: [`packages/core/tools/src/index.ts:817`](../../packages/core/tools/src/index.ts)
 
 <a id="tools-events"></a>
 
@@ -596,7 +621,7 @@ A tool was registered or unregistered, or a scoped restriction changed (the avai
 'tools/change'(): void
 ```
 
-Source: [`packages/core/tools/src/index.ts:207`](../../packages/core/tools/src/index.ts)
+Source: [`packages/core/tools/src/index.ts:208`](../../packages/core/tools/src/index.ts)
 
 <a id="toolscode-dispatch-log--waterfall"></a>
 
@@ -623,7 +648,7 @@ Allow a listener to replace content in the DURABLE LOG COPY of one `run_code` su
 
 Types: [ContentBlock](llm-streaming.md) · [Scoped](scope.md)
 
-Source: [`packages/core/tools/src/index.ts:189`](../../packages/core/tools/src/index.ts)
+Source: [`packages/core/tools/src/index.ts:190`](../../packages/core/tools/src/index.ts)
 
 <a id="toolsexecute--waterfall"></a>
 
@@ -647,7 +672,7 @@ Around-dispatch waterfall for timeout, retry, or metrics. `next()` returns a nor
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/core/tools/src/index.ts:163`](../../packages/core/tools/src/index.ts)
+Source: [`packages/core/tools/src/index.ts:164`](../../packages/core/tools/src/index.ts)
 
 <a id="toolspost-execute--waterfall"></a>
 
@@ -672,7 +697,7 @@ Accept, replace, enrich, or block a normalized dispatch result. `next()` accepts
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/core/tools/src/index.ts:175`](../../packages/core/tools/src/index.ts)
+Source: [`packages/core/tools/src/index.ts:176`](../../packages/core/tools/src/index.ts)
 
 <a id="toolspre-execute--waterfall"></a>
 
@@ -695,7 +720,7 @@ Allow, deny, or ask before dispatch. `next()` delegates to allow; missing approv
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/core/tools/src/index.ts:152`](../../packages/core/tools/src/index.ts)
+Source: [`packages/core/tools/src/index.ts:153`](../../packages/core/tools/src/index.ts)
 
 <a id="toolsresult--emit"></a>
 
@@ -716,5 +741,5 @@ Observe the frozen, lossless-JSON final outcome. Listener failures are contained
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/core/tools/src/index.ts:197`](../../packages/core/tools/src/index.ts)
+Source: [`packages/core/tools/src/index.ts:198`](../../packages/core/tools/src/index.ts)
 <!-- END GENERATED cordis-surface -->

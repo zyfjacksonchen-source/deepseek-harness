@@ -1926,6 +1926,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the definition the scope resolves, or undefined when none is visible.',
       },
       {
+        signature: 'provenance(name: string, scope?: ScopeKey): ToolRegistrationProvenance | undefined',
+        description: 'Read the Loader identity captured by the tool registration currently visible to one scope. Scoped shadows and restrictions use the same winner as get; direct registrations without a Loader entry are intentionally unattributed, and never fall back to a hidden registration.',
+        parameters: [{ name: 'name', description: 'the tool name as registered.' }, { name: 'scope', description: 'the viewing scope (the agent); omitted = the global view.' }],
+        returns: 'the visible winner\'s frozen registration identity, or undefined.',
+      },
+      {
         signature: 'schemas(scope?: ScopeKey): ToolSchema[]',
         description: 'Project visible definitions onto the allowlisted model-facing schema fields, excluding execution and presentation callbacks.',
         parameters: [{ name: 'scope', description: 'the viewing scope (the agent); omitted = the global view.' }],
@@ -4424,6 +4430,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface ToolProviderResult {\n    readonly schemas: readonly ToolSchema[];\n    readonly knownNames?: readonly string[];\n}',
   },
   {
+    name: 'ToolRegistrationProvenance',
+    declaration: 'export interface ToolRegistrationProvenance {\n    readonly moduleSpecifier: string;\n    readonly pluginName: string;\n}',
+  },
+  {
     name: 'ToolRestriction',
     declaration: 'export interface ToolRestriction {\n    readonly allow?: readonly string[];\n    readonly deny?: readonly string[];\n}',
   },
@@ -4449,7 +4459,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolRuntime',
-    declaration: 'export class ToolRuntime extends Service {\n    static inject;\n    static Config: z<Config>;\n    readonly [TOOL_RUNTIME_SCHEDULER]: ToolRuntimeScheduler;\n    constructor(ctx: Context, config: Config = {});\n    presentAs(mode: ToolPresentationMode): () => void;\n    register(definition: ToolDefinition): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    guard(guard: ToolGuard): () => void;\n    get(name: string, scope?: ScopeKey): ToolDefinition | undefined;\n    schemas(scope?: ScopeKey): ToolSchema[];\n    executionMode(exec: ToolExecutionInput): ToolExecutionMode;\n    async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>;\n}',
+    declaration: 'export class ToolRuntime extends Service {\n    static inject;\n    static Config: z<Config>;\n    readonly [TOOL_RUNTIME_SCHEDULER]: ToolRuntimeScheduler;\n    constructor(ctx: Context, config: Config = {});\n    presentAs(mode: ToolPresentationMode): () => void;\n    register(definition: ToolDefinition): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    guard(guard: ToolGuard): () => void;\n    get(name: string, scope?: ScopeKey): ToolDefinition | undefined;\n    provenance(name: string, scope?: ScopeKey): ToolRegistrationProvenance | undefined;\n    schemas(scope?: ScopeKey): ToolSchema[];\n    executionMode(exec: ToolExecutionInput): ToolExecutionMode;\n    async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>;\n}',
   },
   {
     name: 'ToolRuntimeScheduler',

@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { boot, healProfilesModuleFallback, loadOverlayPatches } from '@deepseek-ai/dsh-app-boot'
 import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
@@ -219,9 +219,109 @@ describe('the shipped Web composition', () => {
         'subagent', 'subagent_fork', 'todo_write', 'update_goal', 'web_search',
         'workflow', 'write',
       ])
+      const terminal = process.platform === 'win32'
+        ? ['pwsh', '@deepseek-ai/dsh-tool-pwsh', 'tool-pwsh'] as const
+        : ['bash', '@deepseek-ai/dsh-tool-bash', 'tool-bash'] as const
+      expect(ctx.tools.provenance(terminal[0], handle.agent)).toEqual({
+        moduleSpecifier: terminal[1],
+        pluginName: terminal[2],
+      })
+      expect(ctx.tools.provenance('web_search', handle.agent)).toEqual({
+        moduleSpecifier: '@deepseek-ai/dsh-tool-web',
+        pluginName: 'tool-web',
+      })
+      expect(JSON.stringify(await ctx.systemPrompt.assemble({ scope: handle.agent })))
+        .not.toContain('moduleSpecifier')
+      expect(JSON.stringify({
+        header: handle.agent.session.header,
+        events: handle.agent.session.events,
+      })).not.toContain('moduleSpecifier')
     } finally {
       await handle.dispose()
     }
+  })
+
+  it('tracks the actual Loader winner through shadowing, restriction, HMR, and disposal', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-tool-provenance-'))
+    const firstPath = join(directory, 'first.mjs')
+    const secondPath = join(directory, 'second.mjs')
+    const pluginSource = (pluginName: string) => `
+export const name = ${JSON.stringify(pluginName)}
+export const inject = ['tools']
+export function apply(ctx) {
+  ctx.tools.register({
+    name: 'web_search',
+    description: 'third-party search',
+    parameters: { type: 'object', properties: {} },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute() { return 'third-party' },
+  })
+}
+`
+    await writeFile(firstPath, pluginSource('third-party-search-v1'))
+    await writeFile(secondPath, pluginSource('third-party-search-v2'))
+    const firstSpecifier = pathToFileURL(firstPath).href
+    const secondSpecifier = pathToFileURL(secondPath).href
+    let entryId: string | undefined
+    let handle: AgentHandle | undefined
+    try {
+      entryId = await ctx.loader.create({ name: firstSpecifier })
+      const first = ctx.tools.provenance('web_search')
+      expect(first).toEqual({
+        moduleSpecifier: firstSpecifier,
+        pluginName: 'third-party-search-v1',
+      })
+      expect(Object.isFrozen(first)).toBe(true)
+
+      await ctx.loader.resolve(entryId).update({ name: secondSpecifier })
+      expect(first).toEqual({
+        moduleSpecifier: firstSpecifier,
+        pluginName: 'third-party-search-v1',
+      })
+      expect(ctx.tools.provenance('web_search')).toEqual({
+        moduleSpecifier: secondSpecifier,
+        pluginName: 'third-party-search-v2',
+      })
+
+      handle = await ctx.agents.create({
+        sessionId: SessionId('preset-provenance-shadow'),
+        setup: agentCtx => ctx.agentPresets.mount(agentCtx, 'standard').then(() => undefined),
+      })
+      const official = {
+        moduleSpecifier: '@deepseek-ai/dsh-tool-web',
+        pluginName: 'tool-web',
+      }
+      expect(ctx.tools.provenance('web_search', handle.agent)).toEqual(official)
+
+      const liftRestriction = handle.agent.ctx.tools.restrict({ deny: ['web_search'] })
+      expect(ctx.tools.provenance('web_search', handle.agent)).toBeUndefined()
+      liftRestriction()
+      expect(ctx.tools.provenance('web_search', handle.agent)).toEqual(official)
+
+      const definition = ctx.tools.get('web_search', handle.agent)
+      if (definition === undefined) throw new Error('standard must register web_search')
+      const removeLocal = handle.agent.ctx.tools.register({
+        ...definition,
+        description: 'agent-local shadow',
+      })
+      // The exact agent scope owns this winner, so it must not inherit the
+      // hidden official tool's identity. The scope fiber is created under the
+      // Loader-backed agent-loop entry and reports that actual owner instead.
+      expect(ctx.tools.provenance('web_search', handle.agent)).toEqual({
+        moduleSpecifier: '@deepseek-ai/dsh-agent-loop',
+        pluginName: 'scope',
+      })
+      removeLocal()
+      expect(ctx.tools.provenance('web_search', handle.agent)).toEqual(official)
+    } finally {
+      await handle?.dispose()
+      if (entryId !== undefined) await ctx.loader.remove(entryId)
+      await rm(directory, { recursive: true, force: true })
+    }
+    expect(ctx.tools.provenance('web_search')).toBeUndefined()
   })
 
   it('composes the exact RL prompt and two tools from `minimal`', async () => {

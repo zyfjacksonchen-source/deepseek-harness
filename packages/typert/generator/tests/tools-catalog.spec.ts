@@ -69,6 +69,9 @@ describe('model-driven dsh-tools generation', () => {
     expect(service?.types.find(type => type.name === 'ToolDefinition')).toEqual(
       TYPE_API.find(type => type.name === 'ToolDefinition'),
     )
+    expect(service?.types.find(type => type.name === 'ToolRegistrationProvenance')).toEqual(
+      TYPE_API.find(type => type.name === 'ToolRegistrationProvenance'),
+    )
 
     await dispose()
     expect(ctx.typert.getPackage('@deepseek-ai/dsh-tools', 'host')).toBeUndefined()
