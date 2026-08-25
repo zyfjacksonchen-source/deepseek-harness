@@ -7,6 +7,7 @@ import type {
 import { PendingWait } from '@deepseek-ai/dsh-client-runtime/client'
 import type { RpcReceipt } from '@deepseek-ai/dsh-api-remotes/client'
 import { RpcId } from '@deepseek-ai/dsh-client-connection/client'
+import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import { PendingQuestion, type QuestionComposerProps } from '../src/client/contract/slots.ts'
 import { QuestionComposer, parseRecommendedLabel } from '../src/client/QuestionComposer.tsx'
@@ -148,11 +149,11 @@ describe('QuestionComposer', () => {
   it('shows session-authorized image review media and gates acceptance on both previews loading', async () => {
     const respond = vi.fn(() => Promise.resolve<RpcReceipt>({ accepted: true }))
     const source = {
-      attachmentId: `sha256:${'a'.repeat(64)}`, mediaType: 'image/png' as const,
+      attachmentId: AttachmentId(`sha256:${'a'.repeat(64)}`), mediaType: 'image/png' as const,
       bytes: 10, width: 20, height: 30,
     }
     const output = {
-      attachmentId: `sha256:${'b'.repeat(64)}`, mediaType: 'image/png' as const,
+      attachmentId: AttachmentId(`sha256:${'b'.repeat(64)}`), mediaType: 'image/png' as const,
       bytes: 11, width: 20, height: 30,
     }
     const carrier = new PendingWait('question', RpcId('image-review'), SID, {
@@ -190,10 +191,10 @@ describe('QuestionComposer', () => {
 
   it('keeps acceptance disabled when an image-review attachment cannot be loaded', async () => {
     const source = {
-      attachmentId: `sha256:${'a'.repeat(64)}`, mediaType: 'image/png' as const,
+      attachmentId: AttachmentId(`sha256:${'a'.repeat(64)}`), mediaType: 'image/png' as const,
       bytes: 10, width: 20, height: 30,
     }
-    const output = { ...source, attachmentId: `sha256:${'b'.repeat(64)}` }
+    const output = { ...source, attachmentId: AttachmentId(`sha256:${'b'.repeat(64)}`) }
     const carrier = new PendingWait('question', RpcId('image-review-failed'), SID, {
       questions: [{
         id: 'review', question: '确认改图结果吗？', detail: '目标要求',
