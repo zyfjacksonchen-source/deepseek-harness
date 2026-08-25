@@ -58,6 +58,10 @@ declare module '@deepseek-ai/cordis' {
  *   than process-wide: registrations made from an unscoped context serve
  *   every owner, and registrations made under an agent composition's scope
  *   serve exactly the agents composed under it.
+ * - {@link startWhenAvailable} is the opt-in process-wide FIFO for producers
+ *   that require one active job per kind across owners. It releases admission
+ *   only from the same terminal Job settlement that drives reads and notices;
+ *   ordinary {@link start} remains synchronous and unqueued.
  */
 export abstract class JobRegistry extends Service {
   constructor(ctx: Context) {
@@ -80,6 +84,22 @@ export abstract class JobRegistry extends Service {
    * @returns the registry-issued `<kind>-N` id.
    */
   abstract start(spec: JobStart): JobId
+
+  /**
+   * Wait in FIFO order until no live job of the same kind remains, then apply
+   * the ordinary {@link start} contract. The wait is process-wide across
+   * owners, but the registered job keeps `spec.owner` for access and cleanup.
+   *
+   * This is an opt-in admission path: ordinary {@link start} stays immediate
+   * and does not join the queue. A queued cancellation, owner disposal, or
+   * service disposal rejects before producer execution and id allocation.
+   * Capacity is released by authoritative job settlement (`done`), not by a
+   * producer fiber or another resource's disposal.
+   * @param spec - job identity, owner, and synchronous starter.
+   * @param signal - optional cancellation while waiting for admission.
+   * @returns the registry-issued `<kind>-N` id after admission.
+   */
+  abstract startWhenAvailable(spec: JobStart, signal?: AbortSignal): Promise<JobId>
 
   /**
    * List caller-owned and unowned jobs in registration order without exposing

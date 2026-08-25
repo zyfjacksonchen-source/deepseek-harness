@@ -154,7 +154,7 @@ interface JobRead {
 
 ## 服务行为
 
-抽象的 [`JobRegistry`](../../packages/jobs/jobs/src/index.ts) Service Definition 规定原子 `start`、限定调用方作用域的 `get` 和 `list`、`read`、`kill`、有界 `wait`、故障隔离的 `onJobDone` 与 `onJobsChanged` 监听器，以及 `attachController` 何时可用；[`LocalJobRegistry`](../../packages/jobs/jobs-local/src/index.ts) 是其进程局部 Service Provider。授权会比较拥有者会话；拥有者清理与准入会使用确切的已注册 `Agent` 实例。本地 Service Provider 的 `maxConcurrentJobsPerOwner` 配置必须是正的安全整数，默认值为 `10`；它按确切 owner 统计 `running` 与 `stopping` 记录，所有无 owner 任务共享一个服务级桶，并在生产方终止结算后释放容量。Service Definition 约定见 [`dsh-jobs`](../../packages/jobs/jobs/README.md)，注册表生命周期与准入策略见 [`dsh-jobs-local`](../../packages/jobs/jobs-local/README.md)，面向模型的 Consumer 见 [`dsh-tool-jobs`](../../packages/jobs/tool-jobs/README.md)。
+抽象的 [`JobRegistry`](../../packages/jobs/jobs/src/index.ts) Service Definition 规定原子 `start`、显式选择的 `startWhenAvailable`、限定调用方作用域的 `get` 和 `list`、`read`、`kill`、有界 `wait`、故障隔离的 `onJobDone` 与 `onJobsChanged` 监听器，以及 `attachController` 何时可用；[`LocalJobRegistry`](../../packages/jobs/jobs-local/src/index.ts) 是其进程局部 Service Provider。授权会比较拥有者会话；拥有者清理与准入会使用确切的已注册 `Agent` 实例。本地 Service Provider 的 `maxConcurrentJobsPerOwner` 配置必须是正的安全整数，默认值为 `10`；它按确切 owner 统计 `running` 与 `stopping` 记录，所有无 owner 任务共享一个服务级桶。需要在不同 owner 之间限制某个 kind 只能有 1 个活动 Job 的生产方可以显式使用进程级 FIFO；两种上限都只在生产方终止结算时释放容量。Service Definition 约定见 [`dsh-jobs`](../../packages/jobs/jobs/README.md)，注册表生命周期与准入策略见 [`dsh-jobs-local`](../../packages/jobs/jobs-local/README.md)，面向模型的 Consumer 见 [`dsh-tool-jobs`](../../packages/jobs/tool-jobs/README.md)。
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
@@ -176,6 +176,7 @@ Implementations must honor these semantics:
 - Owned-job access is fenced by the owner's session id. Ids are predictable, so authorization — not secrecy — is the boundary.
 - Settlement is first-wins: one terminal record, released waiters, and one round of contained listener notification, even against a late producer outcome. Completion is announced last, after the record is committed and every other observer of the settlement has seen it, because a reporter may open a model turn synchronously.
 - start refuses work while no attached job controller serves the spec's owner, so a producer cannot start work that owner cannot collect or stop. One registry serves every composition in the process, so this question — and completion-listener delivery — is owner-relative rather than process-wide: registrations made from an unscoped context serve every owner, and registrations made under an agent composition's scope serve exactly the agents composed under it.
+- startWhenAvailable is the opt-in process-wide FIFO for producers that require one active job per kind across owners. It releases admission only from the same terminal Job settlement that drives reads and notices; ordinary start remains synchronous and unqueued.
 
 ```ts cordis-catalog
 /**
@@ -188,6 +189,22 @@ Implementations must honor these semantics:
  * @returns the registry-issued `<kind>-N` id.
  */
 abstract start(spec: JobStart): JobId
+
+/**
+ * Wait in FIFO order until no live job of the same kind remains, then apply
+ * the ordinary {@link start} contract. The wait is process-wide across
+ * owners, but the registered job keeps `spec.owner` for access and cleanup.
+ *
+ * This is an opt-in admission path: ordinary {@link start} stays immediate
+ * and does not join the queue. A queued cancellation, owner disposal, or
+ * service disposal rejects before producer execution and id allocation.
+ * Capacity is released by authoritative job settlement (`done`), not by a
+ * producer fiber or another resource's disposal.
+ * @param spec - job identity, owner, and synchronous starter.
+ * @param signal - optional cancellation while waiting for admission.
+ * @returns the registry-issued `<kind>-N` id after admission.
+ */
+abstract startWhenAvailable(spec: JobStart, signal?: AbortSignal): Promise<JobId>
 
 /**
  * List caller-owned and unowned jobs in registration order without exposing
@@ -286,5 +303,5 @@ abstract attachController(name: string): () => void
 
 Types: [Agent](core.md)
 
-Source: [`packages/jobs/jobs/src/index.ts:62`](../../packages/jobs/jobs/src/index.ts)
+Source: [`packages/jobs/jobs/src/index.ts:66`](../../packages/jobs/jobs/src/index.ts)
 <!-- END GENERATED cordis-surface -->

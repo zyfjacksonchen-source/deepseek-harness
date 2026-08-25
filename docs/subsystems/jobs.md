@@ -154,7 +154,7 @@ interface JobRead {
 
 ## Service behavior
 
-The abstract [`JobRegistry`](../../packages/jobs/jobs/src/index.ts) Service Definition specifies atomic `start`, caller-scoped `get` and `list`, `read`, `kill`, bounded `wait`, failure-isolated `onJobDone` and `onJobsChanged` listeners, and when `attachController` becomes available; [`LocalJobRegistry`](../../packages/jobs/jobs-local/src/index.ts) is the process-local Service Provider. Authorization compares owner sessions; owner cleanup and admission use the exact registered `Agent` instance. The local provider's positive-safe-integer `maxConcurrentJobsPerOwner` config defaults to `10` and counts `running` plus `stopping` records per exact owner, with one shared bucket for unowned jobs; terminal producer settlement releases capacity. See [`dsh-jobs`](../../packages/jobs/jobs/README.md) for the Service Definition contract, [`dsh-jobs-local`](../../packages/jobs/jobs-local/README.md) for the registry lifecycle and admission policy, and [`dsh-tool-jobs`](../../packages/jobs/tool-jobs/README.md) for the model-facing Consumer.
+The abstract [`JobRegistry`](../../packages/jobs/jobs/src/index.ts) Service Definition specifies atomic `start`, opt-in `startWhenAvailable`, caller-scoped `get` and `list`, `read`, `kill`, bounded `wait`, failure-isolated `onJobDone` and `onJobsChanged` listeners, and when `attachController` becomes available; [`LocalJobRegistry`](../../packages/jobs/jobs-local/src/index.ts) is the process-local Service Provider. Authorization compares owner sessions; owner cleanup and admission use the exact registered `Agent` instance. The local provider's positive-safe-integer `maxConcurrentJobsPerOwner` config defaults to `10` and counts `running` plus `stopping` records per exact owner, with one shared bucket for unowned jobs. Producers that need one active Job of a kind across owners may opt into the process-wide FIFO; both limits release capacity only from terminal producer settlement. See [`dsh-jobs`](../../packages/jobs/jobs/README.md) for the Service Definition contract, [`dsh-jobs-local`](../../packages/jobs/jobs-local/README.md) for the registry lifecycle and admission policy, and [`dsh-tool-jobs`](../../packages/jobs/tool-jobs/README.md) for the model-facing Consumer.
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
@@ -176,6 +176,7 @@ Implementations must honor these semantics:
 - Owned-job access is fenced by the owner's session id. Ids are predictable, so authorization — not secrecy — is the boundary.
 - Settlement is first-wins: one terminal record, released waiters, and one round of contained listener notification, even against a late producer outcome. Completion is announced last, after the record is committed and every other observer of the settlement has seen it, because a reporter may open a model turn synchronously.
 - start refuses work while no attached job controller serves the spec's owner, so a producer cannot start work that owner cannot collect or stop. One registry serves every composition in the process, so this question — and completion-listener delivery — is owner-relative rather than process-wide: registrations made from an unscoped context serve every owner, and registrations made under an agent composition's scope serve exactly the agents composed under it.
+- startWhenAvailable is the opt-in process-wide FIFO for producers that require one active job per kind across owners. It releases admission only from the same terminal Job settlement that drives reads and notices; ordinary start remains synchronous and unqueued.
 
 ```ts cordis-catalog
 /**
@@ -188,6 +189,22 @@ Implementations must honor these semantics:
  * @returns the registry-issued `<kind>-N` id.
  */
 abstract start(spec: JobStart): JobId
+
+/**
+ * Wait in FIFO order until no live job of the same kind remains, then apply
+ * the ordinary {@link start} contract. The wait is process-wide across
+ * owners, but the registered job keeps `spec.owner` for access and cleanup.
+ *
+ * This is an opt-in admission path: ordinary {@link start} stays immediate
+ * and does not join the queue. A queued cancellation, owner disposal, or
+ * service disposal rejects before producer execution and id allocation.
+ * Capacity is released by authoritative job settlement (`done`), not by a
+ * producer fiber or another resource's disposal.
+ * @param spec - job identity, owner, and synchronous starter.
+ * @param signal - optional cancellation while waiting for admission.
+ * @returns the registry-issued `<kind>-N` id after admission.
+ */
+abstract startWhenAvailable(spec: JobStart, signal?: AbortSignal): Promise<JobId>
 
 /**
  * List caller-owned and unowned jobs in registration order without exposing
@@ -286,5 +303,5 @@ abstract attachController(name: string): () => void
 
 Types: [Agent](core.md)
 
-Source: [`packages/jobs/jobs/src/index.ts:62`](../../packages/jobs/jobs/src/index.ts)
+Source: [`packages/jobs/jobs/src/index.ts:66`](../../packages/jobs/jobs/src/index.ts)
 <!-- END GENERATED cordis-surface -->
