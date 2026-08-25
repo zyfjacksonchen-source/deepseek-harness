@@ -190,7 +190,7 @@ export class LocalJobRegistry extends JobRegistry {
     void admitted.catch(() => {})
     const phase: Extract<TaskPhase, { state: 'waiting' }> = {
       state: 'waiting',
-      run: spec.run,
+      run: spec.run.bind(spec),
       resolve: resolveAdmission,
       reject: rejectAdmission,
       detachAbort: () => {},
@@ -636,6 +636,9 @@ export class LocalJobRegistry extends JobRegistry {
   /** Cancel, await terminal records, and drop every job owned by one exact agent lifecycle. */
   private async disposeOwned(owner: Agent): Promise<void> {
     const owned = [...this.store.values()].filter(job => job.owner === owner)
+    // Cancel every waiter while its started predecessor still holds the lane,
+    // so a throwing predecessor cancel cannot admit work into a disposing owner.
+    this.cancelForTeardown(owned.filter(job => job.phase.state === 'waiting'), 'owner disposed')
     this.cancelForTeardown(owned, 'owner disposed')
     await Promise.all(owned.map(job => job.settled))
     for (const job of owned) this.store.delete(job.id)
