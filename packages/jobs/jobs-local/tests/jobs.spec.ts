@@ -13,6 +13,7 @@ import { unsupportedInbox } from '@deepseek-ai/dsh-agent-loop-testkit'
 declare module '@deepseek-ai/dsh-jobs' {
   interface JobKindMap {
     workflow: 'workflow'
+    emateImage: 'emate-image'
   }
 }
 
@@ -268,6 +269,129 @@ describe('LocalJobRegistry.start', () => {
     expect(ctx.jobs.start(producer().spec)).toBe('bash-2')
     expect(ctx.jobs.start(producer({ kind: 'subagent' }).spec)).toBe('subagent-1')
     expect(ctx.jobs.start(producer({ kind: 'workflow' }).spec)).toBe('workflow-1')
+  })
+})
+
+describe('LocalJobRegistry.startWhenAvailable', () => {
+  it('exposes a Promise-returning admission API', async () => {
+    const ctx = await harness()
+    expectTypeOf(ctx.jobs.startWhenAvailable).returns.toEqualTypeOf<Promise<JobId>>()
+  })
+
+  it('serializes one kind FIFO across real owner Sessions and keeps ordinary owner authority', async () => {
+    const ctx = await harness()
+    const ownerA = stubAgent(ctx, 'image-parent-a')
+    const ownerB = stubAgent(ctx, 'image-parent-b')
+    ctx.agents.register(ownerA)
+    ctx.agents.register(ownerB)
+    const starts: string[] = []
+    const first = producer({ kind: 'emate-image', owner: ownerA })
+    const second = producer({ kind: 'emate-image', owner: ownerB })
+
+    const firstId = await ctx.jobs.startWhenAvailable({
+      ...first.spec,
+      run: () => { starts.push('a'); return first.spec.run() },
+    })
+    const secondAdmission = ctx.jobs.startWhenAvailable({
+      ...second.spec,
+      run: () => { starts.push('b'); return second.spec.run() },
+    })
+    await tick()
+    expect(starts).toEqual(['a'])
+    expect(ctx.jobs.get(firstId, ownerA)).toMatchObject({ ownerSession: ownerA.id, status: 'running' })
+
+    first.settle({ status: 'completed' })
+    const secondId = await secondAdmission
+    expect(starts).toEqual(['a', 'b'])
+    expect(ctx.jobs.get(secondId, ownerB)).toMatchObject({ ownerSession: ownerB.id, status: 'running' })
+    expect(() => ctx.jobs.get(secondId, ownerA)).toThrow('belongs to another session')
+    expect(() => ctx.jobs.kill(secondId, ownerA)).toThrow('belongs to another session')
+    expect(ctx.jobs.kill(secondId, ownerB)).toBe('requested')
+    second.settle({ status: 'killed' })
+    await tick()
+  })
+
+  it('does not allocate an id or invoke a queued producer when admission is aborted', async () => {
+    const ctx = await harness()
+    const first = producer({ kind: 'emate-image' })
+    const firstId = await ctx.jobs.startWhenAvailable(first.spec)
+    const blocked = producer({ kind: 'emate-image' })
+    const run = vi.fn(() => blocked.spec.run())
+    const abort = new AbortController()
+    const rejected = expect(ctx.jobs.startWhenAvailable({ ...blocked.spec, run }, abort.signal))
+      .rejects.toThrow('background job admission aborted')
+
+    abort.abort()
+    await rejected
+    expect(run).not.toHaveBeenCalled()
+    expect(ctx.jobs.list().map(job => job.id)).toEqual([firstId])
+    first.settle({ status: 'completed' })
+    await tick()
+    expect(await ctx.jobs.startWhenAvailable(blocked.spec)).toBe('emate-image-2')
+    blocked.settle({ status: 'completed' })
+    await tick()
+  })
+
+  it('keeps the kind lane occupied while the active Job is stopping', async () => {
+    const ctx = await harness()
+    const first = producer({ kind: 'emate-image' })
+    const firstId = await ctx.jobs.startWhenAvailable(first.spec)
+    const next = producer({ kind: 'emate-image' })
+    const nextRun = vi.fn(() => next.spec.run())
+    const nextAdmission = ctx.jobs.startWhenAvailable({ ...next.spec, run: nextRun })
+
+    expect(ctx.jobs.kill(firstId)).toBe('requested')
+    await tick()
+    expect(nextRun).not.toHaveBeenCalled()
+    first.settle({ status: 'killed' })
+    await expect(nextAdmission).resolves.toBe('emate-image-2')
+    next.settle({ status: 'completed' })
+    await tick()
+  })
+
+  it('rejects a disposed owner while queued and lets the next owner retain FIFO progress', async () => {
+    const ctx = await harness()
+    const ownerA = stubAgent(ctx, 'image-parent-a')
+    const ownerB = stubAgent(ctx, 'image-parent-b')
+    const ownerC = stubAgent(ctx, 'image-parent-c')
+    ctx.agents.register(ownerA)
+    ctx.agents.register(ownerB)
+    ctx.agents.register(ownerC)
+    const first = producer({ kind: 'emate-image', owner: ownerA })
+    await ctx.jobs.startWhenAvailable(first.spec)
+    const blocked = producer({ kind: 'emate-image', owner: ownerB })
+    const blockedRun = vi.fn(() => blocked.spec.run())
+    const rejected = expect(ctx.jobs.startWhenAvailable({ ...blocked.spec, run: blockedRun }))
+      .rejects.toThrow('background job admission unavailable: owner disposed')
+    const next = producer({ kind: 'emate-image', owner: ownerC })
+    const nextAdmission = ctx.jobs.startWhenAvailable(next.spec)
+
+    await disposeAgentScope(ownerB)
+    await rejected
+    expect(blockedRun).not.toHaveBeenCalled()
+    first.settle({ status: 'completed' })
+    await expect(nextAdmission).resolves.toBe('emate-image-2')
+    next.settle({ status: 'completed' })
+    await tick()
+  })
+
+  it('continues FIFO admission after a queued starter throws without burning an id', async () => {
+    const ctx = await harness()
+    const first = producer({ kind: 'emate-image' })
+    await ctx.jobs.startWhenAvailable(first.spec)
+    const failed = expect(ctx.jobs.startWhenAvailable({
+      kind: 'emate-image',
+      label: 'broken queued producer',
+      run: () => { throw new Error('starter boom') },
+    })).rejects.toThrow('starter boom')
+    const next = producer({ kind: 'emate-image' })
+    const nextAdmission = ctx.jobs.startWhenAvailable(next.spec)
+
+    first.settle({ status: 'completed' })
+    await failed
+    await expect(nextAdmission).resolves.toBe('emate-image-2')
+    next.settle({ status: 'completed' })
+    await tick()
   })
 })
 
@@ -855,6 +979,30 @@ describe('LocalJobRegistry owner cleanup', () => {
 })
 
 describe('LocalJobRegistry disposal', () => {
+  it('rejects queued admission before bounded service teardown cancels the active job', async () => {
+    const ctx = new Context()
+    await ctx.plugin(AgentRegistry)
+    const fiber = await ctx.plugin(LocalJobRegistry)
+    ctx.jobs.attachController('test-controller')
+    let settle!: (outcome: JobOutcome) => void
+    await ctx.jobs.startWhenAvailable({
+      kind: 'emate-image',
+      label: 'active image',
+      run: () => ({
+        cancel() { settle({ status: 'killed' }) },
+        done: new Promise<JobOutcome>((resolve) => { settle = resolve }),
+      }),
+    })
+    const blockedRun = vi.fn(() => producer({ kind: 'emate-image' }).spec.run())
+    const queued = expect(ctx.jobs.startWhenAvailable({
+      kind: 'emate-image', label: 'queued image', run: blockedRun,
+    })).rejects.toThrow('background job admission unavailable: jobs service disposed')
+
+    await fiber.dispose()
+    await queued
+    expect(blockedRun).not.toHaveBeenCalled()
+  })
+
   it('cancels live jobs, awaits settlement, and silences listeners', async () => {
     const ctx = new Context()
     await ctx.plugin(AgentRegistry)

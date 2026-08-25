@@ -62,6 +62,14 @@ interface TrackedTask {
   waitResolvers: Set<() => void>
 }
 
+/** One not-yet-started request in the opt-in, per-kind FIFO admission lane. */
+interface PendingAdmission {
+  spec: JobStart
+  resolve: (id: JobId) => void
+  reject: (error: Error) => void
+  detachAbort: () => void
+}
+
 /** True for the three terminal {@link JobStatus} values. */
 function isTerminal(status: JobStatus): boolean {
   return status === 'completed' || status === 'killed' || status === 'failed'
@@ -115,6 +123,10 @@ export class LocalJobRegistry extends JobRegistry {
    */
   private readonly layers = new ScopedLayers<JobLayer>(() => new JobLayer(), () => {})
   private listenersClosed = false
+  /** Opt-in waiters keyed by kind; Job records remain the only active-count authority. */
+  private readonly admissionQueues = new Map<JobKind, PendingAdmission[]>()
+  /** Synchronous cutoff that makes service teardown reject future and queued admission. */
+  private admissionsClosed = false
   /** Owner agents with attached scope cleanup, mapped to the exact disposer. */
   private ownerCleanups = new Map<Agent, () => Promise<void> | void>()
   /** Service context used by detached settlement continuations and teardown. */
@@ -129,16 +141,7 @@ export class LocalJobRegistry extends JobRegistry {
   }
 
   start(spec: JobStart): JobId {
-    if (!this.servesOwner(spec.owner)) {
-      throw new Error('background jobs unavailable: no job controller serves this agent (load @deepseek-ai/dsh-tool-jobs in its composition)')
-    }
-    if (spec.kind.length === 0) throw new Error('invalid job kind: expected a non-empty string')
-    if (spec.label.length === 0) throw new Error('invalid job label: expected a non-empty string')
-    if (spec.outputLimitBytes !== undefined
-      && (!Number.isSafeInteger(spec.outputLimitBytes) || spec.outputLimitBytes <= 0)) {
-      throw new Error(`invalid outputLimitBytes: expected a positive safe integer, got ${JSON.stringify(spec.outputLimitBytes)}`)
-    }
-    if (spec.owner !== undefined) this.ensureOwnerCleanup(spec.owner)
+    this.preflightStart(spec)
 
     const active = this.activeTaskCount(spec.owner)
     if (active >= this.maxConcurrentJobsPerOwner) {
@@ -187,6 +190,52 @@ export class LocalJobRegistry extends JobRegistry {
     // has genuinely changed.
     this.notifyChanged(job.owner)
     return id
+  }
+
+  async startWhenAvailable(spec: JobStart, signal?: AbortSignal): Promise<JobId> {
+    if (this.admissionsClosed) throw new Error('background job admission unavailable: jobs service disposed')
+    this.preflightStart(spec)
+    if (signal?.aborted) throw new Error('background job admission aborted')
+
+    return new Promise<JobId>((resolve, reject) => {
+      const queue = this.admissionQueues.get(spec.kind) ?? []
+      const admission: PendingAdmission = {
+        spec,
+        resolve,
+        reject,
+        detachAbort: () => {},
+      }
+      if (signal !== undefined) {
+        const onAbort = (): void => {
+          const index = queue.indexOf(admission)
+          if (index < 0) return
+          queue.splice(index, 1)
+          admission.detachAbort()
+          reject(new Error('background job admission aborted'))
+          this.dropEmptyAdmissionQueue(spec.kind, queue)
+          this.drainAdmissions(spec.kind)
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+        admission.detachAbort = () => signal.removeEventListener('abort', onAbort)
+      }
+      queue.push(admission)
+      this.admissionQueues.set(spec.kind, queue)
+      this.drainAdmissions(spec.kind)
+    })
+  }
+
+  /** Shared validation and owner-lifecycle preflight for immediate and queued starts. */
+  private preflightStart(spec: JobStart): void {
+    if (!this.servesOwner(spec.owner)) {
+      throw new Error('background jobs unavailable: no job controller serves this agent (load @deepseek-ai/dsh-tool-jobs in its composition)')
+    }
+    if (spec.kind.length === 0) throw new Error('invalid job kind: expected a non-empty string')
+    if (spec.label.length === 0) throw new Error('invalid job label: expected a non-empty string')
+    if (spec.outputLimitBytes !== undefined
+      && (!Number.isSafeInteger(spec.outputLimitBytes) || spec.outputLimitBytes <= 0)) {
+      throw new Error(`invalid outputLimitBytes: expected a positive safe integer, got ${JSON.stringify(spec.outputLimitBytes)}`)
+    }
+    if (spec.owner !== undefined) this.ensureOwnerCleanup(spec.owner)
   }
 
   list(caller?: Agent): JobSnapshot[] {
@@ -327,6 +376,59 @@ export class LocalJobRegistry extends JobRegistry {
     return count
   }
 
+  /** Count authoritative live records across owners for one producer kind. */
+  private activeTaskCountForKind(kind: JobKind): number {
+    let count = 0
+    for (const job of this.store.values()) {
+      if (job.kind === kind && (job.status === 'running' || job.status === 'stopping')) count += 1
+    }
+    return count
+  }
+
+  /** Admit one FIFO waiter once the kind's authoritative live count reaches zero. */
+  private drainAdmissions(kind: JobKind): void {
+    if (this.admissionsClosed || this.activeTaskCountForKind(kind) > 0) return
+    const queue = this.admissionQueues.get(kind)
+    if (queue === undefined) return
+    while (queue.length > 0 && this.activeTaskCountForKind(kind) === 0) {
+      const admission = queue.shift()
+      if (admission === undefined) break
+      admission.detachAbort()
+      try {
+        admission.resolve(this.start(admission.spec))
+      } catch (error: unknown) {
+        admission.reject(error instanceof Error ? error : new Error(String(error)))
+      }
+    }
+    this.dropEmptyAdmissionQueue(kind, queue)
+  }
+
+  /** Avoid retaining an empty per-kind lane after admission, abort, or teardown. */
+  private dropEmptyAdmissionQueue(kind: JobKind, queue: PendingAdmission[]): void {
+    if (queue.length === 0 && this.admissionQueues.get(kind) === queue) {
+      this.admissionQueues.delete(kind)
+    }
+  }
+
+  /** Reject selected requests before they allocate an id or invoke their producer. */
+  private rejectAdmissions(predicate: (admission: PendingAdmission) => boolean, message: string): void {
+    for (const [kind, queue] of this.admissionQueues) {
+      let changed = false
+      for (let index = queue.length - 1; index >= 0; index -= 1) {
+        const admission = queue[index]
+        if (admission === undefined) continue
+        if (!predicate(admission)) continue
+        queue.splice(index, 1)
+        changed = true
+        admission.detachAbort()
+        admission.reject(new Error(message))
+      }
+      if (!changed) continue
+      this.dropEmptyAdmissionQueue(kind, queue)
+      this.drainAdmissions(kind)
+    }
+  }
+
   /**
    * The completion listeners that own `owner`'s notices: the global layer's
    * first, then each scoped layer along the owner's chain. A listener outside
@@ -426,6 +528,9 @@ export class LocalJobRegistry extends JobRegistry {
     for (const resolveWait of waitResolvers) resolveWait()
     job.markSettled()
     this.notifyChanged(job.owner)
+    // Terminal Job settlement, not producer-fiber or child-resource disposal,
+    // is the authority that releases the opt-in per-kind lane.
+    this.drainAdmissions(job.kind)
     if (this.listenersClosed) return
     for (const listener of this.listenersFor(job.owner)) {
       try {
@@ -465,6 +570,10 @@ export class LocalJobRegistry extends JobRegistry {
 
   /** Cancel, await terminal records, and drop every job owned by one exact agent lifecycle. */
   private async disposeOwned(owner: Agent): Promise<void> {
+    this.rejectAdmissions(
+      admission => admission.spec.owner === owner,
+      'background job admission unavailable: owner disposed',
+    )
     const owned = [...this.store.values()].filter(job => job.owner === owner)
     this.cancelForTeardown(owned, 'owner disposed')
     await Promise.all(owned.map(job => job.settled))
@@ -482,6 +591,8 @@ export class LocalJobRegistry extends JobRegistry {
     // The flag is the whole guard: each layer entry's undo belongs to the fiber
     // that registered it, so this service may not drop them on its own way out.
     this.listenersClosed = true
+    this.admissionsClosed = true
+    this.rejectAdmissions(() => true, 'background job admission unavailable: jobs service disposed')
     const all = [...this.store.values()]
     this.cancelForTeardown(all, 'jobs service disposed')
     await Promise.all(all.map(job => job.settled))

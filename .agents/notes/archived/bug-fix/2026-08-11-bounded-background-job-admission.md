@@ -31,7 +31,7 @@ When the bucket is full, `start()` throws before producer execution and task-id 
 
 Owner and service disposal keep their existing order: request cancellation, retain `stopping` occupancy while producers release resources, await settlement, then remove records. The admission policy therefore follows the same lifecycle fact used by reads, notices, and cleanup rather than treating a cancellation request as resource release.
 
-Continuable background subagents remain outside this budget. They own durable child sessions and live Activations rather than Task records, so limiting them requires a separate result and lifecycle contract. This decision also adds no Task snapshot, session-log, wire, persistence, process-wide CPU or memory budget, queue, priority, preemption, or automatic oldest-task termination.
+Continuable background subagents remain outside this budget. They own durable child sessions and live Activations rather than Task records, so limiting them requires a separate result and lifecycle contract. The immediate `start()` path also adds no Task snapshot, session-log, wire, persistence, process-wide CPU or memory budget, queue, priority, preemption, or automatic oldest-task termination. The later [cross-owner kind admission decision](2026-08-25-cross-owner-kind-job-admission.md) adds one opt-in FIFO for a concrete producer need without changing this per-owner rejection path.
 
 ## Verification
 
@@ -45,7 +45,7 @@ The task-provider suite covers the default and explicit limits, producer-before 
 
 **Use one global process bucket.** Rejected because one busy agent would deny unrelated sessions, while unowned host work still needs an explicit bounded bucket. Exact owner identity already defines the cleanup lifecycle and supplies the correct partition.
 
-**Queue, preempt, or terminate the oldest task.** Rejected because each policy adds ordering, ownership, and cancellation behavior beyond the requested fail-closed limit. An explicit rejection lets the model decide which work is no longer needed through the existing `job_kill` control.
+**Queue, preempt, or terminate the oldest task for every `start()`.** Rejected because each policy adds ordering, ownership, and cancellation behavior beyond the requested fail-closed per-owner limit. An explicit rejection lets the model decide which work is no longer needed through the existing `job_kill` control. The later opt-in cross-owner FIFO has a separate concrete consumer and leaves ordinary `start()` unchanged.
 
 **Maintain a mutable active-count map.** Rejected because the registry already holds the authoritative records and statuses. A second count would require rollback and settlement synchronization while providing no user result that a direct derivation lacks.
 
