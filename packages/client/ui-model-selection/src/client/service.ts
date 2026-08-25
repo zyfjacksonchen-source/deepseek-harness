@@ -54,9 +54,20 @@ export class ModelDirectoryResolver extends Service {
       this.catalog.resetGeneration()
       for (const directory of this.live.directories.values()) directory.resetConnected()
     })
-    ctx.remote.$on('llm/adapters-updated', () => { this.catalog.refresh() })
-    ctx.remote.$on('settings/document-updated', () => { this.catalog.refresh() })
-    ctx.remote.$on('credentials/reference-updated', () => { this.catalog.refresh() })
+    // Any of these sources can change the directory: credentials, registry
+    // topology commits, and settings documents carrying catalogs or defaults.
+    // A credential commit must additionally reload every live per-session
+    // directory; refreshing the shared catalog alone leaves a session showing
+    // the directory it resolved before the credential changed.
+    const refresh = (): void => {
+      this.catalog.refresh()
+      for (const directory of this.live.directories.values()) {
+        directory.load().catch(() => undefined)
+      }
+    }
+    ctx.remote.$on('llm/adapters-updated', refresh)
+    ctx.remote.$on('settings/document-updated', refresh)
+    ctx.remote.$on('credentials/reference-updated', refresh)
   }
 
   /**
