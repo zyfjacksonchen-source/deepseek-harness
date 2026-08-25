@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-25-cross-owner-kind-job-admission.md
-2026-08-25-cross-owner-kind-job-admission.md: 0570585e75bb2763b7e331f44d3f73d33e11afc1
-2026-08-25-cross-owner-kind-job-admission.zh.md: e8c877a6e55962ac411232e9ff05d5103b2c22ed
+2026-08-25-cross-owner-kind-job-admission.md: a7c6ce30b962be43751181e828a0d0f4c2754178
+2026-08-25-cross-owner-kind-job-admission.zh.md: 4ca8d011b424e331f7ff93962d5805998cb0ae4a

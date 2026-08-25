@@ -100,7 +100,7 @@ describe('jobs-local through a real Loader composition', () => {
     const starts: string[] = []
     let settleA!: (outcome: { status: 'completed' }) => void
     let settleB!: (outcome: { status: 'completed' }) => void
-    await context.jobs.startWhenAvailable({
+    const first = context.jobs.startWhenAvailable({
       kind: 'emate-image',
       label: 'loader image a',
       owner: ownerA,
@@ -109,6 +109,7 @@ describe('jobs-local through a real Loader composition', () => {
         return { cancel: () => {}, done: new Promise((resolve) => { settleA = resolve }) }
       },
     })
+    await first.admitted
     const second = context.jobs.startWhenAvailable({
       kind: 'emate-image',
       label: 'loader image b',
@@ -121,7 +122,8 @@ describe('jobs-local through a real Loader composition', () => {
     await Promise.resolve()
     expect(starts).toEqual(['a'])
     settleA({ status: 'completed' })
-    await expect(second).resolves.toBe('emate-image-2')
+    await expect(second.admitted).resolves.toBeUndefined()
+    expect(second.id).toBe('emate-image-2')
     expect(starts).toEqual(['a', 'b'])
     settleB({ status: 'completed' })
     await Promise.resolve()

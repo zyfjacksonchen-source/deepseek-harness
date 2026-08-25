@@ -12,7 +12,8 @@ export { JobId } from './brand.ts'
 
 /**
  * Task lifecycle: `running`, optionally `stopping`, then exactly one terminal
- * status. Producer-specific facts belong in {@link JobSnapshot.detail}.
+ * status. `running` includes a registered Job waiting for producer admission.
+ * Producer-specific facts belong in {@link JobSnapshot.detail}.
  */
 export type JobStatus = 'running' | 'stopping' | 'completed' | 'killed' | 'failed'
 
@@ -39,9 +40,10 @@ export interface JobOutcome {
 }
 
 /**
- * Producer declaration passed to {@link JobRegistry.start}. The runtime
- * preflights access and cleanup before invoking {@link run}; the producer owns
- * execution resources while the runtime owns identity and lifecycle state.
+ * Producer declaration passed to a {@link JobRegistry} start method. The
+ * runtime preflights access and cleanup before invoking {@link run}; the
+ * producer owns execution resources while the runtime owns identity and
+ * lifecycle state.
  */
 export interface JobStart {
   /** Producer kind — also the id prefix (`bash`, `subagent`, …). */
@@ -62,10 +64,23 @@ export interface JobStart {
   owner?: Agent
   /**
    * Start the work after preflight and synchronously return its hooks. Called
-   * once; a throw leaves nothing registered, and the producer must clean up any
-   * partially started resources.
+   * once. A throw from {@link JobRegistry.start} leaves nothing registered; a
+   * throw after queued admission fails that registered Job. The producer must
+   * clean up any partially started resources.
    */
   run(): JobHooks
+}
+
+/** Handle returned once queued admission has registered its Job. */
+export interface JobAdmission {
+  /** The immediately registered Job id. */
+  id: JobId
+  /**
+   * Resolves after the producer starter returns and its hooks are installed;
+   * it does not await producer completion. Rejects when cancellation or
+   * teardown settles the Job before producer start, or when the starter throws.
+   */
+  admitted: Promise<void>
 }
 
 /** Hooks through which the runtime controls and observes producer work. */

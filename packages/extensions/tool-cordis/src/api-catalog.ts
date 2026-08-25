@@ -1141,7 +1141,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
   {
     key: 'jobs',
     summary: 'Abstract background job registry.',
-    description: 'Abstract background job registry. Subclass, implement the abstract methods, and load the subclass as a plugin — it registers as `ctx.jobs` (one implementation per context; loading a second throws, which is cordis\' standard duplicate-service behavior).\n\nImplementations must honor these semantics:\n\n- Registrations outlive producer and controller fibers. Owner and service disposal cancel live work and await compliant producers; a throwing teardown cancel force-fails only the record. Teardown cancellation also marks the record reported, because a record its owner is being destroyed for has no reader left.\n- Owned-job access is fenced by the owner\'s session id. Ids are predictable, so authorization — not secrecy — is the boundary.\n- Settlement is first-wins: one terminal record, released waiters, and one round of contained listener notification, even against a late producer outcome. Completion is announced last, after the record is committed and every other observer of the settlement has seen it, because a reporter may open a model turn synchronously.\n- start refuses work while no attached job controller serves the spec\'s owner, so a producer cannot start work that owner cannot collect or stop. One registry serves every composition in the process, so this question — and completion-listener delivery — is owner-relative rather than process-wide: registrations made from an unscoped context serve every owner, and registrations made under an agent composition\'s scope serve exactly the agents composed under it.\n- startWhenAvailable is the opt-in process-wide FIFO for producers that require one active job per kind across owners. It releases admission only from the same terminal Job settlement that drives reads and notices; ordinary start remains synchronous and unqueued.',
+    description: 'Abstract background job registry. Subclass, implement the abstract methods, and load the subclass as a plugin — it registers as `ctx.jobs` (one implementation per context; loading a second throws, which is cordis\' standard duplicate-service behavior).\n\nImplementations must honor these semantics:\n\n- Registrations outlive producer and controller fibers. Owner and service disposal cancel live work and await compliant producers; a throwing teardown cancel force-fails only the record. Teardown cancellation also marks the record reported, because a record its owner is being destroyed for has no reader left.\n- Owned-job access is fenced by the owner\'s session id. Ids are predictable, so authorization — not secrecy — is the boundary.\n- Settlement is first-wins: one terminal record, released waiters, and one round of contained listener notification, even against a late producer outcome. Completion is announced last, after the record is committed and every other observer of the settlement has seen it, because a reporter may open a model turn synchronously.\n- start refuses work while no attached job controller serves the spec\'s owner, so a producer cannot start work that owner cannot collect or stop. One registry serves every composition in the process, so this question — and completion-listener delivery — is owner-relative rather than process-wide: registrations made from an unscoped context serve every owner, and registrations made under an agent composition\'s scope serve exactly the agents composed under it.\n- startWhenAvailable immediately registers a real Job, then uses an opt-in process-wide FIFO to delay only producer execution for kinds that require one active producer across owners. Waiting Jobs use the ordinary owner access, cancellation, and teardown lifecycle. Terminal Job settlement releases the lane; ordinary start remains synchronous and unqueued. Implementations reject a kind\'s 65th waiter before id allocation or producer execution.',
     methods: [
       {
         signature: 'abstract start(spec: JobStart): JobId',
@@ -1150,10 +1150,10 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the registry-issued `<kind>-N` id.',
       },
       {
-        signature: 'abstract startWhenAvailable(spec: JobStart, signal?: AbortSignal): Promise<JobId>',
-        description: 'Wait in FIFO order until no live job of the same kind remains, then apply the ordinary start contract. The wait is process-wide across owners, but the registered job keeps `spec.owner` for access and cleanup.\n\nThis is an opt-in admission path: ordinary start stays immediate and does not join the queue. A queued cancellation, owner disposal, or service disposal rejects before producer execution and id allocation. Capacity is released by authoritative job settlement (`done`), not by a producer fiber or another resource\'s disposal.',
+        signature: 'abstract startWhenAvailable(spec: JobStart, signal?: AbortSignal): JobAdmission',
+        description: 'Register a Job immediately, then wait in FIFO order until no started Job of the same kind remains before invoking `spec.run()`. The wait is process-wide across owners, but the Job keeps `spec.owner` for native access, cancellation, and cleanup while waiting.\n\nThis is an opt-in admission path: ordinary start stays immediate and does not join the queue. The ordinary per-owner limit includes waiting Jobs and is checked before the fixed 64-waiter per-kind limit. A waiting abort, kill, owner disposal, or service disposal settles the Job as `killed` without invoking `run()` and rejects `admitted`; a synchronous starter throw settles the already registered Job as `failed` and also rejects `admitted`. Authoritative terminal Job settlement releases the lane. Settlement remains first-wins.',
         parameters: [{ name: 'spec', description: 'job identity, owner, and synchronous starter.' }, { name: 'signal', description: 'optional cancellation while waiting for admission.' }],
-        returns: 'the registry-issued `<kind>-N` id after admission.',
+        returns: 'the registered id and producer-start admission Promise.',
       },
       {
         signature: 'abstract list(caller?: Agent): JobSnapshot[]',
@@ -4419,6 +4419,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'InvokeRemoteRequest',
     declaration: 'export interface InvokeRemoteRequest {\n    readonly namespace: string;\n    readonly method: string;\n    readonly args: Readonly<Record<string, unknown>>;\n    readonly signal?: AbortSignal;\n}',
+  },
+  {
+    name: 'JobAdmission',
+    declaration: 'export interface JobAdmission {\n    id: JobId;\n    admitted: Promise<void>;\n}',
   },
   {
     name: 'JobDoneListener',

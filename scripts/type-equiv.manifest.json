@@ -1053,6 +1053,11 @@
     },
     {
       "doc": "docs/subsystems/jobs.md",
+      "symbol": "JobAdmission",
+      "source": "packages/jobs/jobs/src/types.ts"
+    },
+    {
+      "doc": "docs/subsystems/jobs.md",
       "symbol": "JobHooks",
       "source": "packages/jobs/jobs/src/types.ts"
     },
