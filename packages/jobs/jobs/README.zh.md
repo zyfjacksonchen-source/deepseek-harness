@@ -7,7 +7,7 @@
 ## 服务约定
 
 - `start(spec): JobId` 验证已附加的任务控制器、spec、确切且仍存活的 owner、可选的正数 `outputLimitBytes`，以及 Service Provider 所拥有的准入策略，然后只调用生产方的 `run()` 一次。预检拒绝或启动方抛出异常时都不会生成 job id 或注册工作；成功返回会直接提交，不再执行其他可能失败的步骤。
-- `startWhenAvailable(spec, signal?): Promise<JobId>` 让某一种生产方 kind 显式进入进程级 FIFO，并在不同 owner 之间只保留 1 个活动 Job。等待中的请求保留原 owner，但没有 id、快照或执行资源。中止、owner dispose 与服务 dispose 都会在 `run()` 前拒绝请求；权威 Job 终态结算会释放下一项请求。
+- `startWhenAvailable(spec, signal?): JobAdmission` 会立即注册一个限定 owner 作用域的 Job 并返回 `{ id, admitted }`，随后通过进程级 FIFO 仅延迟 `run()`，使每个 kind 同时只有 1 个已启动的生产方。`admitted: Promise<void>` 在 `run()` 返回且钩子安装完成后 resolve，而不等待 `done` 结算；若等待期间发生 abort、kill、owner dispose 或服务 dispose，它会在 Job 以 `killed` 结算后 reject；若同步启动器抛错，它会在 Job 以 `failed` 结算后 reject。等待 Job 会以 `running` 状态出现在 `list` 与 `get` 中，支持原生 `kill`，并计入普通的每 owner 上限。每个 kind 最多保留 64 个等待 Job；第 65 个等待项会在分配 id 或执行生产方前被拒绝。权威 Job 终态结算会释放 lane。
 - `get(id, caller?)` 和 `list(caller?)` 返回非消费式快照。列表只包含调用方拥有及无 owner 的任务。
 - `read(id, caller?)` 消费流任务的唯一游标；对于最终输出任务，则以幂等方式读取终止输出。
 - `kill(id, caller?, reason?)` 在更改状态前调用生产方取消。取消抛出异常时任务保持运行；成功则把状态改为 `stopping`，并将终止交付标记为已报告。
@@ -39,4 +39,4 @@
 - **流输出只有一个消费游标**：独立观察者需要游标或快照 API。
 - **前台工作无法转为后台**：生产方在启动前选择前台或后台。
 - **约定是进程内的**：`JobStart.run()` 传入回调和确切的 `Agent` 对象；持久化或跨进程后端必须先重塑身份、重启、所有权与观察语义，才能实现此 seam。
-- **kind 准入需要显式选择**：普通 `start()` 保持立即执行，不加入 FIFO。需要产品级单活动上限的生产方必须把该 kind 的每一次启动都路由到 `startWhenAvailable()`。
+- **kind 准入需要显式选择**：普通 `start()` 保持立即执行，不加入 FIFO。需要产品级单已启动生产方上限的生产方必须把该 kind 的每一次启动都路由到 `startWhenAvailable()`，并观察 `admitted`。

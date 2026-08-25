@@ -9,11 +9,12 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {
-  JobDoneListener, JobId, JobRead, JobSnapshot, JobStart, JobsChangedListener,
+  JobAdmission, JobDoneListener, JobId, JobRead, JobSnapshot, JobStart, JobsChangedListener,
 } from './types.ts'
 
 export { JobId } from './types.ts'
 export type {
+  JobAdmission,
   JobDoneListener,
   JobHooks,
   JobKind,
@@ -58,10 +59,13 @@ declare module '@deepseek-ai/cordis' {
  *   than process-wide: registrations made from an unscoped context serve
  *   every owner, and registrations made under an agent composition's scope
  *   serve exactly the agents composed under it.
- * - {@link startWhenAvailable} is the opt-in process-wide FIFO for producers
- *   that require one active job per kind across owners. It releases admission
- *   only from the same terminal Job settlement that drives reads and notices;
- *   ordinary {@link start} remains synchronous and unqueued.
+ * - {@link startWhenAvailable} immediately registers a real Job, then uses an
+ *   opt-in process-wide FIFO to delay only producer execution for kinds that
+ *   require one active producer across owners. Waiting Jobs use the ordinary
+ *   owner access, cancellation, and teardown lifecycle. Terminal Job
+ *   settlement releases the lane; ordinary {@link start} remains synchronous
+ *   and unqueued. Implementations reject a kind's 65th waiter before id
+ *   allocation or producer execution.
  */
 export abstract class JobRegistry extends Service {
   constructor(ctx: Context) {
@@ -86,20 +90,24 @@ export abstract class JobRegistry extends Service {
   abstract start(spec: JobStart): JobId
 
   /**
-   * Wait in FIFO order until no live job of the same kind remains, then apply
-   * the ordinary {@link start} contract. The wait is process-wide across
-   * owners, but the registered job keeps `spec.owner` for access and cleanup.
+   * Register a Job immediately, then wait in FIFO order until no started Job of
+   * the same kind remains before invoking `spec.run()`. The wait is
+   * process-wide across owners, but the Job keeps `spec.owner` for native
+   * access, cancellation, and cleanup while waiting.
    *
    * This is an opt-in admission path: ordinary {@link start} stays immediate
-   * and does not join the queue. A queued cancellation, owner disposal, or
-   * service disposal rejects before producer execution and id allocation.
-   * Capacity is released by authoritative job settlement (`done`), not by a
-   * producer fiber or another resource's disposal.
+   * and does not join the queue. The ordinary per-owner limit includes waiting
+   * Jobs and is checked before the fixed 64-waiter per-kind limit. A waiting
+   * abort, kill, owner disposal, or service disposal settles the Job as
+   * `killed` without invoking `run()` and rejects `admitted`; a synchronous
+   * starter throw settles the already registered Job as `failed` and also
+   * rejects `admitted`. Authoritative terminal Job settlement releases the
+   * lane. Settlement remains first-wins.
    * @param spec - job identity, owner, and synchronous starter.
    * @param signal - optional cancellation while waiting for admission.
-   * @returns the registry-issued `<kind>-N` id after admission.
+   * @returns the registered id and producer-start admission Promise.
    */
-  abstract startWhenAvailable(spec: JobStart, signal?: AbortSignal): Promise<JobId>
+  abstract startWhenAvailable(spec: JobStart, signal?: AbortSignal): JobAdmission
 
   /**
    * List caller-owned and unowned jobs in registration order without exposing

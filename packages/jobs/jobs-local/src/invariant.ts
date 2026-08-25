@@ -20,8 +20,9 @@ export const inject = ['invariants']
  * must fail before a backend starter runs; `LocalJobRegistry.start()` enforces it synchronously
  * for current producers. Repeating an aggregate after publication would expose private
  * configuration solely to this companion and would not verify the fail-closed pre-start guarantee.
- * The opt-in per-kind FIFO similarly derives its single active slot from authoritative Job records;
- * its owning behavior tests verify that pending requests have no public snapshot or producer resource.
+ * The opt-in per-kind FIFO similarly derives its single producer slot from authoritative Job records;
+ * its owning behavior tests verify that waiting records are visible and cancellable while their
+ * producer resource does not exist.
  */
 const install: InvariantInstaller = () => {}
 

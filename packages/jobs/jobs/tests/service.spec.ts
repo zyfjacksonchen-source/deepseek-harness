@@ -3,7 +3,7 @@ import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { JobId, JobRegistry } from '@deepseek-ai/dsh-jobs'
 import type {
-  JobDoneListener, JobRead, JobSnapshot, JobStart, JobsChangedListener,
+  JobAdmission, JobDoneListener, JobRead, JobSnapshot, JobStart, JobsChangedListener,
 } from '@deepseek-ai/dsh-jobs'
 
 /**
@@ -28,8 +28,8 @@ class StubJobRegistry extends JobRegistry {
     return JobId(`${spec.kind}-1`)
   }
 
-  startWhenAvailable(spec: JobStart): Promise<JobId> {
-    return Promise.resolve(this.start(spec))
+  startWhenAvailable(spec: JobStart): JobAdmission {
+    return { id: this.start(spec), admitted: Promise.resolve() }
   }
 
   list(): JobSnapshot[] {
@@ -73,9 +73,11 @@ describe('JobRegistry seam', () => {
     const detachController = ctx.jobs.attachController('seam-test')
     const id = ctx.jobs.start({ kind: 'bash', label: 'sleep 60', run: () => ({ cancel() {}, done: new Promise(() => {}) }) })
     expect(id).toBe('bash-1')
-    await expect(ctx.jobs.startWhenAvailable({
+    const admission = ctx.jobs.startWhenAvailable({
       kind: 'bash', label: 'queued sleep', run: () => ({ cancel() {}, done: new Promise(() => {}) }),
-    })).resolves.toBe('bash-1')
+    })
+    expect(admission.id).toBe('bash-1')
+    await expect(admission.admitted).resolves.toBeUndefined()
     expect(ctx.jobs.list()).toHaveLength(1)
     expect(ctx.jobs.get(id).status).toBe('running')
     expect(ctx.jobs.read(id).text).toBe('')

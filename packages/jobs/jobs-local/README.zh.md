@@ -10,11 +10,11 @@
 
 达到容量时，`start()` 会在生产方执行和 id 分配前失败；错误会给出上限，并告诉模型使用 `job_kill`、等待任务完全停稳后再重试。这条立即执行路径不会排队或抢占任务，也不会维护第二份可变计数。
 
-`startWhenAvailable()` 是另一条显式选择的准入路径，供需要在所有 owner 之间限制同一 kind 只能有 1 个活动 Job 的生产方使用。它按 `JobStart.kind` 保存尚未启动请求的 FIFO；请求携带原 owner，但在等待期间不会分配 id、快照或生产方资源。注册表从权威的 `running` 与 `stopping` 记录派生占用，因此只有终止 `done` 结算才会释放下一项请求。中止、确切 owner dispose 与服务 dispose 都会移除并拒绝排队请求。普通 `start()` 保持同步并可绕过该 lane，因此受限 kind 的每个生产方都必须使用异步 seam。
+`startWhenAvailable()` 是另一条显式选择的准入路径，供需要在所有 owner 之间限制同一 kind 只能有 1 个已启动生产方的生产方使用。它先应用普通的每 owner 活跃 Job 上限，再立即分配并发布真实且限定 owner 作用域的 Job，并返回 `{ id, admitted: Promise<void> }`。等待记录对外保持 `running`，支持原生读取与取消 API，且在准入前没有生产方钩子或执行资源。每 kind FIFO 只保存这些记录的 JobId；每个 Job 的私有 `TrackedTask` phase 持有启动器和 Promise 结算。FIFO 最多保留 64 个等待 Job，因此第 65 个等待项会在分配 id 或执行生产方前失败。Job 终态结算会释放 lane。等待期间的 abort、kill、确切 owner dispose 与服务 dispose 会让 Job 以 `killed` 结算并 reject `admitted`；同步启动器抛错会让已分配的 Job 以 `failed` 结算并 reject `admitted`。普通 `start()` 保持同步并可绕过该 lane，因此受限 kind 的每个生产方都必须使用此方法并观察 `admitted`。
 
 ## 生命周期
 
-任务属于其所有者和后端，而不是生产方工具 fiber，因此重载生产方或控制器不会停止任务。某个所有者的第一个任务或排队准入请求会把一个会被等待的 effect 附加到对应 `Agent` 对象的 scope 上。所有者的 dispose（资源释放）会拒绝该对象的排队请求、取消其已启动任务、等待生产方完全停稳，并移除其快照；复用的 agent（智能体）id 或会话 id 无法重定向旧的清理操作。
+任务属于其所有者和后端，而不是生产方工具 fiber，因此重载生产方或控制器不会停止任务。某个所有者的第一个任务会把一个会被等待的 effect 附加到对应 `Agent` 对象的 scope 上。所有者的 dispose（资源释放）会终止取消该对象的等待任务、取消其已启动任务、结算每个准入 Promise、等待生产方完全停稳，并移除其快照；复用的 agent（智能体）id 或会话 id 无法重定向旧的清理操作。
 
 服务 dispose 会关闭监听器、取消所有存活任务、等待其记录完成，并从仍存活的所有者 scope 中分离 effect。如果销毁期间的取消操作抛出异常，服务会强制将记录标为失败，并警告工作可能成为孤立工作，而不会死锁。取消操作已返回但 `done` 始终未结算时，系统无法将其与缓慢停止区分开，销毁过程可能因此停滞。
 

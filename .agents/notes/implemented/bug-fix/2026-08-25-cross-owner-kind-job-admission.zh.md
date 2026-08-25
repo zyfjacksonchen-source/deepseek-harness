@@ -12,17 +12,17 @@ Status: implemented
 
 ## 决策
 
-`JobRegistry` 提供 `startWhenAvailable(spec, signal?)`，`LocalJobRegistry` 将它实现为按 `JobStart.kind` 分组、显式选择的进程级 FIFO。该 lane 在所有 owner 之间只准入 1 个活动 Job。准入后仍通过普通 `start()` 路径创建 Job，因此原来的确切 Agent 继续作为 owner，现有访问、kill、read、通知与清理约定都保持不变。
+`JobRegistry` 提供 `startWhenAvailable(spec, signal?)`；普通校验与每 owner 准入注册真实 Job 后，该方法立即返回 `{ id, admitted: Promise<void> }`。原来的确切 Agent 在等待期间就是 Job owner，因此现有访问、kill、read、通知与清理约定会在生产方执行前生效。`run()` 返回且钩子安装完成后，`admitted` 会 resolve；生产方 `done` 仍负责另一次独立的终态结算。
 
-等待中的请求没有 Job id、快照、生产方执行资源或第二份活动计数。进程内 Service Provider 只保留请求，并从权威的 `running` 与 `stopping` Job 记录派生占用。终止 `JobHooks.done` 结算会提交记录、发布可见集变化，然后在完成监听器可能唤醒 owner 前排出下一项请求。生产方 fiber、child Agent 或 child dispose Promise 都不能释放或占住该 lane。
+`LocalJobRegistry` 只延迟 `run()`。每 kind FIFO 只保存 JobId，而每个权威 `TrackedTask` 都携带私有的 waiting、started 或 settled phase 以及全部准入 Promise 状态。等待 Job 对外是 `running`，没有生产方钩子或执行资源，并计入其确切 owner 的普通上限。每个 kind 最多保留 64 个等待项；系统先检查 owner 上限，再在分配 id 或执行生产方前拒绝第 65 个等待项。Job 终态结算会提交记录、发布可见集变化，然后在完成监听器可能唤醒 owner 前排出下一个 id。生产方 fiber、child Agent 或 child dispose Promise 都不能释放或占住该 lane。
 
-调用方的 AbortSignal 只会取消仍在排队的请求。确切 owner dispose 会先拒绝该 owner 的等待请求，再取消其已启动 Job。服务 dispose 会同步关闭准入，先拒绝所有等待请求，再取消并等待已启动 Job。每次拒绝都发生在 `run()` 与 id 分配前；已准入的启动方若抛出异常，其请求会被拒绝，下一项 FIFO 请求可以继续尝试仍为空闲的 lane。
+调用方的 AbortSignal 与原生 `kill` 只会取消仍在等待的 Job：系统从 FIFO 移除其 id、把记录以 `killed` 结算、拒绝 `admitted`，且不调用 `run()`。确切 owner dispose 与服务 dispose 会对每个匹配的等待项执行同样操作，并在 teardown 返回前结算所有准入 Promise。同步启动器抛错会拒绝 `admitted`、把已经分配的 Job 以 `failed` 结算，并让下一个 FIFO id 尝试已释放的 lane。首次结算优先语义会阻止迟到的生产方结果或重复取消再次释放 lane 或重复通知。
 
-普通 `start()` 保持同步、立即且不排队。它观察同一批 Job 记录，但不加入 FIFO，因此需要这项产品级上限的生产方必须把受限 kind 的每一次启动都路由到 `startWhenAvailable()`。lane 容量固定为 1，直到某个有测量依据的消费方证明需要更宽的原生约定；本次改动不增加优先级、重试、持久化、持久队列、通用调度器或公开 Job 状态。
+普通 `start()` 保持同步、立即且不排队。它观察同一批 Job 记录，但不加入 FIFO，因此需要这项产品级上限的生产方必须把受限 kind 的每一次启动都路由到 `startWhenAvailable()`，并观察 `admitted`。lane 容量固定为 1，直到某个有测量依据的消费方证明需要更宽的原生约定；本次改动不增加优先级、重试、持久化、持久队列、通用调度器或公开 Job 状态。
 
 ## 验证
 
-Service Definition 测试固定 Promise API。进程内 Service Provider 测试使用由真实 `Session` 支撑的父 Agent，固定跨 owner FIFO 顺序、仅终态释放、owner 范围内的 get 与 kill 权限、中止不执行生产方且不分配 id、排队 owner dispose、启动方失败后继续推进，以及有界服务销毁。真实 Cordis Loader 组合会加载 Service Provider 配置行，并证明两个父 Session 不能同时进入同一种生产方。
+Service Definition 测试固定同步句柄与 `Promise<void>` 屏障。进程内 Service Provider 测试使用由真实 `Session` 支撑的父 Agent，固定立即原生可见性、排队 kill 与 abort 的终态、跨 owner FIFO 顺序、仅终态释放、owner 范围内的访问权限、不同 kind 独立、owner 与服务 teardown 的 Promise 结算、同步启动器失败保留已分配 id、首次结算优先释放、owner 上限优先级，以及在不分配 id 或执行生产方的前提下拒绝第 65 个等待项。真实 Cordis Loader 组合会加载 Service Provider 配置行，并证明两个父 Session 不能同时启动同一种生产方。
 
 ## 曾考虑的替代方案
 
@@ -36,4 +36,4 @@ Service Definition 测试固定 Promise API。进程内 Service Provider 测试�
 
 ## 后果
 
-两个无关 owner 可以共享一个稀缺生产方 lane，同时保留普通 Job owner 语义，且不增加产品局部调度器。排队请求有意不显示为 Job；调用方会继续展示现有队列或 child-task 状态，直到准入返回 id。普通 `start()` 按设计可绕过显式选择的 lane，因此集成覆盖必须证明受限 kind 的每个生产方入口都使用新 seam。排队请求只存在于进程本地，并在 teardown 时通过显式拒绝消失，而不是持久化或回放。
+两个无关 owner 可以共享一个稀缺生产方 lane，同时保留普通 Job owner 语义，且不增加产品局部调度器。等待 Job 会有意通过现有 Job API 保持可见，而不增加公开 waiting 状态；调用方可以立即使用其 id，只在生产方启动时机重要时等待 `admitted`。普通 `start()` 按设计可绕过显式选择的 lane，因此集成覆盖必须证明受限 kind 的每个生产方入口都使用新方法。等待 Job 只存在于进程本地，并通过普通生命周期 teardown 结算，而不是持久化或回放。
