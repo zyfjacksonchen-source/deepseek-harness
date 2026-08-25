@@ -547,7 +547,14 @@ async function probeColdSessionMetadata(
 ): Promise<SessionListMetadata | undefined> {
   if (maxBytes === 0) return undefined
   signal?.throwIfAborted()
-  const location = persistence.locate(meta)
+  let location: ReturnType<SessionPersistence['locate']>
+  try {
+    location = persistence.locate(meta)
+  } catch {
+    signal?.throwIfAborted()
+    ctx.logger.warn('session.list: one cold blank-probe location failed (serving it as visible)')
+    return undefined
+  }
   if (location === undefined) return undefined
   signal?.throwIfAborted()
   let size: number

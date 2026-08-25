@@ -112,6 +112,11 @@ function isENOENT(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | null)?.code === 'ENOENT'
 }
 
+/** Header-local Zstandard damage is isolatable; root/config/identity failures are not. */
+function isCorruptZstdHeader(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith('corrupt Zstandard session log:')
+}
+
 /**
  * The JSONL persistence backend. Load as a plugin; it registers as
  * `ctx.sessionPersistence` and (via the coordinator) installs the write-path
@@ -488,9 +493,17 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
         signal?.throwIfAborted()
         if (!pathExists) continue
         // Read only headers so listing scales with session count, not log size.
-        const first = this.compression === 'zstd'
-          ? await this.readFirstZstdLine(path, signal)
-          : await this.readFirstLine(path, signal)
+        let first: string | undefined
+        try {
+          first = this.compression === 'zstd'
+            ? await this.readFirstZstdLine(path, signal)
+            : await this.readFirstLine(path, signal)
+        } catch (error) {
+          signal?.throwIfAborted()
+          if (!isCorruptZstdHeader(error)) throw error
+          this.ctx.logger.warn('session-persistence-jsonl: skipped one corrupt Zstandard header while listing sessions')
+          continue
+        }
         signal?.throwIfAborted()
         if (first === undefined) continue // empty/half-written file
         const meta = parseHeaderMeta(first)

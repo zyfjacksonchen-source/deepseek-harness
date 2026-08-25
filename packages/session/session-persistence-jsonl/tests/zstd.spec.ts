@@ -466,6 +466,40 @@ describe('JsonlSessionPersistence: default Zstandard encoding', () => {
     await expect(ctx.sessionPersistence.load(header.id)).rejects.toThrow(/frame at byte .* failed validation/)
   })
 
+  it('keeps healthy prior-day conversations listable after restart beside one corrupt header', async () => {
+    const root = await freshRoot()
+    const writer = await mount(root)
+    const priorDay = Date.UTC(2026, 7, 24, 16)
+    const healthy = [
+      { ...meta('prior-day-general', '/profile/e-mate/general'), createdAt: priorDay },
+      { ...meta('prior-day-project', '/projects/example'), createdAt: priorDay + 1 },
+    ]
+    for (const header of healthy) {
+      await writer.sessionPersistence.create(header)
+      await writer.sessionPersistence.append(header.id, oneTurnLog())
+    }
+
+    const corrupt = { ...meta('corrupt-neighbor', '/projects/damaged'), createdAt: priorDay + 2 }
+    await writer.sessionPersistence.create(corrupt)
+    await writer.sessionPersistence.append(corrupt.id, oneTurnLog())
+    const corruptPath = logPath(root, corrupt.cwd, corrupt.id, 'zstd')
+    const corruptBytes = Buffer.from(await readFile(corruptPath))
+    const headerFrame = scanZstdFrames(corruptBytes).frames[0]!
+    corruptBytes[headerFrame.end - 1] = corruptBytes[headerFrame.end - 1]! ^ 0xFF
+    await writeFile(corruptPath, corruptBytes)
+
+    // A second mount is the next-day cold Profile process over the same DSH home.
+    const restarted = await mount(root)
+    const listed = await restarted.sessionPersistence.list()
+    expect(new Set(listed.map(header => header.id))).toEqual(new Set(healthy.map(header => header.id)))
+    for (const header of healthy) {
+      await expect(restarted.sessionPersistence.load(header.id))
+        .resolves.toMatchObject({ meta: { id: header.id }, events: oneTurnLog() })
+    }
+    await expect(restarted.sessionPersistence.load(corrupt.id))
+      .rejects.toThrow(/frame at byte .* failed validation/)
+  })
+
   it('stops multi-frame inspection when cancellation arrives at a slice deadline', async () => {
     const root = await freshRoot()
     const ctx = await mount(root)
@@ -649,7 +683,7 @@ describe('JsonlSessionPersistence: default Zstandard encoding', () => {
     expect((await ctx.sessionPersistence.load(header.id)).events).toEqual([...oneTurnLog(), ...secondTurn])
   })
 
-  it('skips empty, incomplete, and non-header compressed artifacts while rejecting malformed header frames', async () => {
+  it('skips empty, incomplete, non-header, and individually malformed compressed headers', async () => {
     const root = await freshRoot()
     for (const [id, content] of [
       ['empty', Buffer.alloc(0)],
@@ -670,7 +704,7 @@ describe('JsonlSessionPersistence: default Zstandard encoding', () => {
       JSON.stringify({ type: 'turn/start' }),
       '',
     ].join('\n')))
-    await expect(ctx.sessionPersistence.list()).rejects.toThrow(/first frame is not exactly one header line/)
+    await expect(ctx.sessionPersistence.list()).resolves.toEqual([])
     await expect(ctx.sessionPersistence.load(SessionId('two-lines')))
       .rejects.toThrow(/first frame is not exactly one header line/)
   })
@@ -691,7 +725,9 @@ describe('JsonlSessionPersistence: default Zstandard encoding', () => {
       .rejects.toThrow(/empty or header-less Zstandard session log/)
     await expect(ctx.sessionPersistence.load(SessionId('empty-header')))
       .rejects.toThrow(/first frame is not exactly one header line/)
-    await expect(ctx.sessionPersistence.list()).rejects.toThrow(/header frame failed validation/)
+    await expect(ctx.sessionPersistence.list()).resolves.toEqual([])
+    await expect(ctx.sessionPersistence.load(SessionId('bad-checksum')))
+      .rejects.toThrow(/frame at byte .* failed validation/)
   })
 })
 
