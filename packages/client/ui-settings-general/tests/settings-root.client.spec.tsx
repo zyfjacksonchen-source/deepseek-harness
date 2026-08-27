@@ -247,6 +247,16 @@ describe('SettingsPanel close paths', () => {
 })
 
 describe('SettingsPanel navigation', () => {
+  it('exposes each existing section id as stable nav metadata', () => {
+    mount({ rows: [
+      { id: 'models', order: 10, label: '模型' },
+      { id: 'plugins', order: 20, label: '能力' },
+    ] })
+    openPanel()
+    expect(screen.getByRole('button', { name: '模型' }).dataset.settingsSectionId).toBe('models')
+    expect(screen.getByRole('button', { name: '能力' }).dataset.settingsSectionId).toBe('plugins')
+  })
+
   it('projects rows, marks the first active, and renders only that section', () => {
     mount()
     openPanel()
