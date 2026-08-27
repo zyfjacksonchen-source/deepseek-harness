@@ -71,6 +71,16 @@ declare module '@deepseek-ai/cordis' {
      */
     'llm/stream'(this: LlmRuntime, options: GenerateOptions, next: () => AsyncIterable<StreamChunk>): AsyncIterable<StreamChunk>
 
+    /**
+     * Transform only the transient messages sent to the captured adapter registration.
+     * The original request has already passed `llm/stream`; every other envelope field
+     * must retain the same key and value, and the runtime validates that obligation.
+     * @param options - resolved request before provider-wire message transformation.
+     * @param next - continue to the next transform and return its candidate request.
+     * @mode waterfall
+     */
+    'llm/wire'(this: LlmRuntime, options: GenerateOptions, next: () => Promise<GenerateOptions>): Promise<GenerateOptions>
+
   }
 }
 
@@ -324,6 +334,23 @@ export interface DirectoryRegistrationHandle {
    * has been disposed.
    */
   replace(entries: readonly LlmConfigurableProvider[]): void
+}
+
+const INVALID_WIRE_REQUEST = 'INVALID_WIRE_REQUEST'
+
+function freezeWireRequest(original: GenerateOptions, candidate: GenerateOptions): GenerateOptions {
+  if (candidate === original) return original
+  if (candidate === null || typeof candidate !== 'object' || !Array.isArray(candidate.messages)) {
+    throw new LlmError('llm/wire must return a model request with messages', INVALID_WIRE_REQUEST)
+  }
+  const originalKeys = Reflect.ownKeys(original)
+  const candidateKeys = Reflect.ownKeys(candidate)
+  if (originalKeys.length !== candidateKeys.length
+    || originalKeys.some(key => !candidateKeys.includes(key)
+      || (key !== 'messages' && !Object.is(original[key as keyof GenerateOptions], candidate[key as keyof GenerateOptions])))) {
+    throw new LlmError('llm/wire may replace only messages', INVALID_WIRE_REQUEST)
+  }
+  return deepFreeze({ ...original, messages: candidate.messages })
 }
 
 /**
@@ -1055,7 +1082,18 @@ export class LlmRuntime extends TypertRemoteService {
         : Object.isFrozen(resolvedOptions)
           ? deepFreeze({ ...resolvedOptions, messages: projectedMessages as Message[] })
           : { ...resolvedOptions, messages: projectedMessages as Message[] }
-      const stream = dispatch(this.forAdapter(projectedOptions, adapter))
+      // Registered wire transforms see exactly the request that would be sent,
+      // after the native file and image projections, and may replace only
+      // messages; the runtime validates that obligation.
+      const transformed = await this.ctx.waterfall(
+        this,
+        'llm/wire',
+        projectedOptions,
+        () => Promise.resolve(projectedOptions),
+      )
+      if (transformed !== projectedOptions) projectedOptions.signal?.throwIfAborted()
+      const wireOptions = freezeWireRequest(projectedOptions, transformed)
+      const stream = dispatch(this.forAdapter(wireOptions, adapter))
       iterator = stream[Symbol.asyncIterator]()
     } catch (error: unknown) {
       yield adapterFailureChunk(error, options.signal)

@@ -6,6 +6,7 @@ import LlmRuntime, {
   GenerateOptions,
   HarnessError,
   isContextWindowExceededError,
+  isAgentLoopRequest,
   isQuotaExceededError,
   LlmAdapter,
   LlmError,
@@ -15,6 +16,8 @@ import LlmRuntime, {
   StreamChunk,
   createMessage,
   createUserMessage,
+  deepFreeze,
+  markAgentLoopRequest,
 } from '@deepseek-ai/dsh-llm'
 import type {
   LlmModelContext,
@@ -201,12 +204,14 @@ describe('LlmRuntime', () => {
       source: { kind: 'user' },
     })
 
-    for await (const _chunk of ctx.llm.stream({
+    const request = {
       provider: 'test-provider',
       model: 'test-model',
       messages: [message],
-    })) { /* drain */ }
+    }
+    for await (const _chunk of ctx.llm.stream(request)) { /* drain */ }
 
+    expect(adapter.lastOptions).toBe(request)
     expect(adapter.lastOptions?.messages[0]).toBe(message)
   })
 
@@ -952,6 +957,138 @@ describe('LlmRuntime', () => {
         },
       },
     })
+  })
+
+  it('transforms transient messages without leaving the prepared adapter registration', async () => {
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    const first = new RecordingAdapter(SCRIPT)
+    const disposeFirst = ctx.llm.registerAdapter(['route'], first)
+    const prepared = await ctx.llm.prepareCall({ provider: 'route', model: 'model' })
+    const originalMessage = createMessage({
+      role: 'user',
+      content: [{ type: 'text', text: 'durable' }],
+      source: { kind: 'user' },
+    })
+    const replacement = createMessage({
+      role: 'user',
+      content: [{ type: 'text', text: 'wire only' }],
+      source: { kind: 'user' },
+    })
+    const request = markAgentLoopRequest(deepFreeze({
+      ...prepared.config,
+      sessionId: 'prepared-session' as NonNullable<GenerateOptions['sessionId']>,
+      messages: [originalMessage],
+    }))
+    let observers = 0
+    let transforms = 0
+    ctx.on('llm/stream', (options, next) => {
+      observers += 1
+      expect(options).toBe(request)
+      expect(isAgentLoopRequest(options)).toBe(true)
+      return next()
+    })
+    ctx.on('llm/wire', async (options, next) => {
+      transforms += 1
+      expect(options).toBe(request)
+      return { ...await next(), messages: [replacement] }
+    })
+
+    disposeFirst()
+    const second = new RecordingAdapter(SCRIPT)
+    ctx.llm.registerAdapter(['route'], second)
+    await collect(prepared.stream(request))
+
+    expect(observers).toBe(1)
+    expect(transforms).toBe(1)
+    expect(first.lastOptions?.messages).toEqual([replacement])
+    expect(Object.isFrozen(first.lastOptions)).toBe(true)
+    expect(Object.isFrozen(first.lastOptions?.messages)).toBe(true)
+    expect(second.lastOptions).toBeUndefined()
+    expect(request.messages).toEqual([originalMessage])
+    expect(isAgentLoopRequest(request)).toBe(true)
+  })
+
+  it('fails closed when a wire transform throws, aborts, or changes any envelope field', async () => {
+    const attempt = async (
+      transform: (candidate: GenerateOptions, controller: AbortController) => GenerateOptions | Promise<GenerateOptions>,
+    ): Promise<{ adapter: RecordingAdapter; chunks: StreamChunk[] }> => {
+      const ctx = new Context()
+      await ctx.plugin(LlmRuntime)
+      const adapter = new class extends RecordingAdapter {
+        override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+          return Promise.resolve({
+            provider,
+            id: model,
+            name: model,
+            reasoning: {
+              efforts: [{ id: ReasoningEffortId('high'), name: 'High' }],
+            },
+          })
+        }
+      }(SCRIPT)
+      ctx.llm.registerAdapter(['route'], adapter)
+      const controller = new AbortController()
+      const config = {
+        provider: 'route',
+        model: 'model',
+        reasoningEffort: ReasoningEffortId('high'),
+        temperature: 0.5,
+        maxTokens: 100,
+        stop: ['stop'],
+      }
+      const prepared = await ctx.llm.prepareCall(config)
+      const request: GenerateOptions = {
+        ...prepared.config,
+        messages: [],
+        system: 'system',
+        tools: [{ name: 'tool', description: 'tool', parameters: {} }],
+        signal: controller.signal,
+        sessionId: 'session' as NonNullable<GenerateOptions['sessionId']>,
+        purpose: 'compaction',
+      }
+      ctx.on('llm/wire', async (_options, next) => transform(await next(), controller))
+      return { adapter, chunks: await collect(prepared.stream(request)) }
+    }
+
+    const thrown = await attempt(() => { throw new Error('transform failed') })
+    expect(thrown.adapter.lastOptions).toBeUndefined()
+    expect(thrown.chunks.at(-1)).toMatchObject({
+      type: 'finish', reason: { kind: 'error', failure: { message: 'transform failed' } },
+    })
+
+    const aborted = await attempt((candidate, controller) => {
+      controller.abort(new Error('cancel transform'))
+      return { ...candidate, messages: [] }
+    })
+    expect(aborted.adapter.lastOptions).toBeUndefined()
+    expect(aborted.chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'aborted' } })
+
+    const drifts: [string, (candidate: GenerateOptions) => GenerateOptions][] = [
+      ['provider', candidate => ({ ...candidate, provider: 'other' })],
+      ['model', candidate => ({ ...candidate, model: 'other' })],
+      ['reasoningEffort', candidate => ({ ...candidate, reasoningEffort: ReasoningEffortId('other') })],
+      ['temperature', candidate => ({ ...candidate, temperature: 0.7 })],
+      ['maxTokens', candidate => ({ ...candidate, maxTokens: 200 })],
+      ['stop', candidate => ({ ...candidate, stop: [...candidate.stop ?? []] })],
+      ['system', candidate => ({ ...candidate, system: 'other' })],
+      ['tools', candidate => ({ ...candidate, tools: [...candidate.tools ?? []] })],
+      ['signal', candidate => ({ ...candidate, signal: new AbortController().signal })],
+      ['sessionId', candidate => ({ ...candidate, sessionId: 'other' as NonNullable<GenerateOptions['sessionId']> })],
+      ['purpose', candidate => ({ ...candidate, purpose: 'session-title' })],
+      ['added key', candidate => Object.assign({ ...candidate }, { extra: true }) as GenerateOptions],
+      ['removed key', (candidate) => {
+        const { system: _system, ...rest } = candidate
+        return rest as GenerateOptions
+      }],
+    ]
+    for (const [name, drift] of drifts) {
+      const invalid = await attempt(drift)
+      expect(invalid.adapter.lastOptions, name).toBeUndefined()
+      expect(invalid.chunks.at(-1), name).toMatchObject({
+        type: 'finish', reason: { kind: 'error', failure: { code: 'INVALID_WIRE_REQUEST' } },
+      })
+    }
   })
 
   it('reuses one exact-model lookup for prepared config and context metadata', async () => {
