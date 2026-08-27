@@ -157,7 +157,7 @@ export function ConversationRoot({
   })
 
   const composerBar = (
-    <div className={clsx(css.composerStack, hero && css.composerHero)}>
+    <div className={clsx(css.composerStack, hero && css.composerHero)} data-emate-composer-frame-host="">
       {hero && <HeroGlow className={css.heroGlow} />}
       {hero && <HeroShell t={t} />}
       {hero && heroWorkspaceRow}

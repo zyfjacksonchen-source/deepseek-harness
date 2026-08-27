@@ -143,7 +143,10 @@ function mount(
     if (key === 'conversation.input.model' || key === 'conversation.input.plan') {
       seatOwners.push({ key, owner })
     }
-    if (key === 'conversation.hero.workspace') { pickerOwner = owner; return null }
+    if (key === 'conversation.hero.workspace') {
+      pickerOwner = owner
+      return <div data-slot="conversation.hero.workspace" />
+    }
     if (key === 'conversation.session.header') {
       return (
         <ConversationSessionHeader
@@ -266,6 +269,13 @@ describe('Hero chrome', () => {
 })
 
 describe('ConversationRoot resident composer', () => {
+  it('owns one semantic frame containing the hero workspace and resident composer bar', () => {
+    const b = mount(conversationSnapshot({ composerPhase: 'blank' }), undefined, undefined, { summaryBlank: true })
+    const host = b.view.container.querySelector('[data-emate-composer-frame-host]')
+    expect(host?.querySelector('[data-slot="conversation.hero.workspace"]')).toBeTruthy()
+    expect(host?.querySelectorAll('[data-composer-card]')).toHaveLength(1)
+  })
+
   it('renders the composer inert with the blocker\u2019s own reason', () => {
     const b = mount(conversationSnapshot(), undefined, undefined, {
       composerBlock: { reason: 'select a model first' },
