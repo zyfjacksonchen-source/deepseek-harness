@@ -90,6 +90,21 @@ function bench(over?: { running?: boolean; disabled?: boolean; submit?: (args: s
 }
 
 describe('matrix row: plain', () => {
+  it('bounds composer notices in their native owner', () => {
+    vi.useFakeTimers()
+    const shell = new SessionInputShell({ actx: SCTX, defaultSink: vi.fn() })
+    shell.notify('error', '请在空白输入框中使用 @目标，当前草稿已保留。')
+    expect(shell.notices.getSnapshot()?.text).toContain('@目标')
+
+    shell.setDraft('当前草稿仍保留')
+    expect(shell.notices.getSnapshot()).toBeNull()
+    shell.notify('error', '再次提示')
+
+    vi.advanceTimersByTime(4_000)
+    expect(shell.notices.getSnapshot()).toBeNull()
+    shell.dispose()
+    vi.useRealTimers()
+  })
   it('enter falls to the default sink; no claim on the currency; edits free', () => {
     const { textarea, shell, sink } = bench()
     fireEvent.change(textarea, { target: { value: '普通消息' } })

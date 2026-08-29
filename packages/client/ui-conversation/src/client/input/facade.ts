@@ -61,6 +61,7 @@ const EMPTY_QUEUE: readonly QueuedMessage[] = []
 
 /** No-pipeline lexicon: zero text-ref decorations. */
 const EMPTY_LEXICON: ReadonlyMap<'/' | '@', readonly string[]> = new Map()
+const NOTICE_LIFETIME_MS = 4_000
 
 /**
  * The per-session input facade: scoped-event application verbs +
@@ -84,6 +85,7 @@ export class SessionInputShell implements SessionInput {
   // production (the machine's no-clock default is a constant for pure tests).
   private readonly core = new InputMachine({ now: () => Date.now() })
   private noticeSeq = 0
+  private noticeTimer: ReturnType<typeof setTimeout> | undefined
   private lastDraft = ''
   private imageIds: readonly DraftAttachmentId[] = []
   private disposed = false
@@ -104,6 +106,7 @@ export class SessionInputShell implements SessionInput {
    * (narrows the machine's occurrence math; absent → diff scan).
    */
   setDraft(text: string, editRange?: EditRange): void {
+    this.clearNotice()
     this.run(this.core.dispatch({ type: 'draft-changed', draft: text, ...(editRange !== undefined ? { editRange } : {}) }))
   }
 
@@ -196,6 +199,7 @@ export class SessionInputShell implements SessionInput {
    * dismisses and the menu tracks frozen.
    */
   submit(mode: InputSubmitMode = 'queue'): void {
+    this.clearNotice()
     if (this.snapshot.draft.trim() === '' && this.imageIds.length > 0) {
       if (this.snapshot.phase === 'plain') this.deps.defaultSink('', [...this.imageIds], mode)
       return
@@ -345,6 +349,7 @@ export class SessionInputShell implements SessionInput {
   notify(level: 'info' | 'error', text: string): void {
     this.noticeSeq += 1
     this.notices.set({ level, text, seq: this.noticeSeq })
+    this.armNoticeClear()
   }
 
   // ---- wiring-layer extras (not on the frozen SessionInput face) ----
@@ -352,6 +357,7 @@ export class SessionInputShell implements SessionInput {
   /** Teardown: abort any in-flight attempt and stop accepting async settlements. */
   dispose(): void {
     this.disposed = true
+    this.clearNotice()
     this.run(this.core.dispatch({ type: 'release' }))
   }
 
@@ -385,8 +391,7 @@ export class SessionInputShell implements SessionInput {
   private execute(fx: InputEffect): void {
     switch (fx.type) {
       case 'notice': {
-        this.noticeSeq += 1
-        this.notices.set({ level: fx.level, text: fx.text, seq: this.noticeSeq })
+        this.notify(fx.level, fx.text)
         return
       }
       case 'adjudicate': {
@@ -505,5 +510,16 @@ export class SessionInputShell implements SessionInput {
       this.lastDraft = next.draft
       this.mirrorFn?.(next.draft)
     }
+  }
+
+  private armNoticeClear(): void {
+    if (this.noticeTimer !== undefined) clearTimeout(this.noticeTimer)
+    this.noticeTimer = setTimeout(() => { this.clearNotice() }, NOTICE_LIFETIME_MS)
+  }
+
+  private clearNotice(): void {
+    if (this.noticeTimer !== undefined) clearTimeout(this.noticeTimer)
+    this.noticeTimer = undefined
+    this.notices.set(null)
   }
 }
