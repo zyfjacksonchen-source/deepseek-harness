@@ -217,7 +217,7 @@ export class InputMachine {
   }
 
   /** Mint one occurrence at a draft offset. */
-  private mint(reference: ReferenceInsert, offset: number): Occurrence {
+  private mint(reference: ReferenceInsert, offset: number, selected = false): Occurrence {
     this.occurrenceSeq += 1
     return {
       occurrenceId: this.occurrenceSeq,
@@ -226,6 +226,7 @@ export class InputMachine {
       offset,
       label: reference.label,
       clipboardText: reference.clipboardText,
+      ...(selected ? { selected: true as const } : {}),
     }
   }
 
@@ -279,7 +280,7 @@ export class InputMachine {
   private onInsertRef(reference: ReferenceInsert, span: TokenSpan): InputEffect[] {
     if (this.phase !== 'plain' && this.phase !== 'claimed') return []
     if (!this.casOk(span)) return []
-    this.replaceSpanWithChip(reference, span)
+    this.replaceSpanWithChip(reference, span, true)
     this.paste = undefined
     return []
   }
@@ -290,14 +291,14 @@ export class InputMachine {
    * space follows the chip unless one is already next.
    * @returns the inserted length (placeholder plus optional gap).
    */
-  private replaceSpanWithChip(reference: ReferenceInsert, span: TokenSpan): number {
+  private replaceSpanWithChip(reference: ReferenceInsert, span: TokenSpan, selected = false): number {
     this.pushTxn()
     this.typingRun = undefined
     const tail = this.draft.slice(span.end)
     const gap = tail.length === 0 || tail[0] !== ' ' ? ' ' : ''
     const inserted = PLACEHOLDER + gap
     this.reconcile({ start: span.start, end: span.end, insertedLength: inserted.length })
-    this.withMinted([this.mint(reference, span.start)])
+    this.withMinted([this.mint(reference, span.start, selected)])
     this.adopt(this.draft.slice(0, span.start) + inserted + tail)
     this.watchClaim()
     return inserted.length

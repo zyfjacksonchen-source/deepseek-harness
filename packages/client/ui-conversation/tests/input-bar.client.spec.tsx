@@ -1217,6 +1217,44 @@ describe('decorations', () => {
   })
 })
 
+describe('native mention identity', () => {
+  it('submits direct picks but not pasted reference upgrades as identities', async () => {
+    const sink = vi.fn()
+    const controller = {
+      serializeReference: vi.fn(async () => '@电脑操控'),
+      track: vi.fn(),
+    }
+    const shell = new SessionInputShell({
+      actx: SCTX,
+      inputTriggers: () => controller as never,
+      defaultSink: sink,
+    })
+    shell.setDraft('@')
+    shell.insertReference(
+      { source: '电脑操控', ref: 'computer-use', label: '@电脑操控', clipboardText: '@电脑操控' },
+      { start: 0, end: 1, draftRev: shell.snapshot.draftRev },
+    )
+    shell.submit()
+    await vi.waitFor(() => expect(sink).toHaveBeenCalledWith('@电脑操控', [], 'queue', [
+      { source: '电脑操控', ref: 'computer-use' },
+    ]))
+
+    const pastedSink = vi.fn()
+    const pasted = new SessionInputShell({
+      actx: SCTX,
+      inputTriggers: () => controller as never,
+      defaultSink: pastedSink,
+    })
+    pasted.pasteBegin('@电脑操控', { start: 0, end: 0 }, [{
+      start: 0,
+      end: 5,
+      reference: { source: '电脑操控', ref: 'computer-use', label: '@电脑操控', clipboardText: '@电脑操控' },
+    }])
+    pasted.submit()
+    await vi.waitFor(() => expect(pastedSink).toHaveBeenCalledWith('@电脑操控', [], 'queue', []))
+  })
+})
+
 describe('insertText (scoped event body)', () => {
   it('splices plain text over the span and reports success as true', () => {
     const { shell } = bench({ draft: '/fix' })

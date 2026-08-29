@@ -19,6 +19,7 @@ import type { QueueAction, QueueItemId } from './contract/queue.ts'
 import type { ComposerBlocks } from './input/blocks.ts'
 import type { DraftAttachmentId, SessionInputResolver } from './input/contract.ts'
 import type { InputSubmitMode } from './contract/composer-submission.ts'
+import type { NativeMentionIdentity } from '@deepseek-ai/dsh-api-remotes/client'
 
 /**
  * The outward conversation face (`ctx.conversation`): the scope-addressed
@@ -146,6 +147,7 @@ export class ConversationController extends Service implements IConversation {
     text: string,
     imageIds: readonly DraftAttachmentId[],
     mode: InputSubmitMode,
+    mentions?: readonly NativeMentionIdentity[],
   ): Promise<void> {
     const attachments = this.draftImages(imageIds)
     if (attachments.length !== imageIds.length) {
@@ -153,7 +155,7 @@ export class ConversationController extends Service implements IConversation {
     }
     const uploaded = await this.serializeImages(attachments.map(attachment => attachment.file))
     const content = [...uploaded, ...(text === '' ? [] : [{ type: 'text' as const, text }])]
-    const result = await session.prompt(content, mode)
+    const result = await session.prompt(content, mode, mentions)
     if (!result.ok) throw new Error(`conversation.send failed: ${result.error.code}: ${result.error.message}`)
     this.releaseDraftImages(attachments)
   }

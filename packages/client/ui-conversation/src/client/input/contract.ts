@@ -168,6 +168,8 @@ export interface Occurrence {
   readonly label: string
   /** Clipboard / persistence projection, e.g. `/name` (insert-time cache, never the model form). */
   readonly clipboardText: string
+  /** True only for a direct native menu pick; pasted/upgraded chips never grant an action. */
+  readonly selected?: true
   /** Owner-resolution failure flag: chip renders invalid; serialization must fail. */
   readonly invalid?: boolean
 }

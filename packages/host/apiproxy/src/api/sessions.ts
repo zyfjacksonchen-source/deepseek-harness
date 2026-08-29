@@ -52,7 +52,7 @@ declare module '@deepseek-ai/dsh-llm' {
      * carries no transport vocabulary; rpcId and the optional Host-validated browser zone are
      * durable JSON fields passed back to the client with the event.
      */
-    'user-rpc': { kind: 'user'; rpcId: RpcId; clientTimeZone?: string }
+    'user-rpc': { kind: 'user'; rpcId: RpcId; clientTimeZone?: string; mentions?: readonly NativeMentionIdentity[] }
   }
 }
 
@@ -87,6 +87,12 @@ export interface SessionProjectionsBlock {
 export type PromptContentPart =
   | { type: 'text'; text: string }
   | { type: 'image'; mediaType: ImageMediaType; data: string; name?: string }
+
+/** Native reference selections attached by the Composer, separate from model-facing text. */
+export interface NativeMentionIdentity {
+  source: string
+  ref: string
+}
 
 /** Complete model selection for one session. */
 export interface ModelSelection {
@@ -349,6 +355,7 @@ export interface SessionsApi {
     mode: 'queue' | 'steer'
     content: PromptContentPart[]
     clientTimeZone?: string
+    mentions?: NativeMentionIdentity[]
   }>):
   Promise<RpcResponse<{ accepted: true; command?: { kind: 'success'; text?: string } }>>
 

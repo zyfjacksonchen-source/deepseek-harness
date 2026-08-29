@@ -18,6 +18,7 @@ import type {
 } from './contract.ts'
 import type { InputSubmitMode } from '../contract/composer-submission.ts'
 import { InputMachine } from './machine.ts'
+import type { NativeMentionIdentity } from '@deepseek-ai/dsh-api-remotes/client'
 
 /** Popup face the shell needs (dismissal only; typed structurally to avoid a value import). */
 export interface PopupDismissFace {
@@ -45,7 +46,7 @@ export interface SessionInputDeps {
    */
   steerQueue?: (() => void) | undefined
   /** The plain-message sink (send choreography / materialize fork — the hub owns it). */
-  defaultSink(text: string, imageIds: readonly DraftAttachmentId[], mode: InputSubmitMode): void
+  defaultSink(text: string, imageIds: readonly DraftAttachmentId[], mode: InputSubmitMode, mentions?: readonly NativeMentionIdentity[]): void
 }
 
 /** Guard tier from the machine phase. */
@@ -456,7 +457,10 @@ export class SessionInputShell implements SessionInput {
           cursor = part.offset + 1
         }
         out += draft.slice(cursor)
-        this.deps.defaultSink(out.trim(), imageIds, mode)
+        const mentions = occurrences
+          .filter(o => o.selected === true)
+          .map(o => ({ source: o.source, ref: o.ref }))
+        this.deps.defaultSink(out.trim(), imageIds, mode, mentions)
       },
       (error: unknown) => {
         controller.abort()
