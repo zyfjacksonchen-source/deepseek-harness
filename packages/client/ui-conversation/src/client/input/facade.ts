@@ -61,7 +61,6 @@ const EMPTY_QUEUE: readonly QueuedMessage[] = []
 
 /** No-pipeline lexicon: zero text-ref decorations. */
 const EMPTY_LEXICON: ReadonlyMap<'/' | '@', readonly string[]> = new Map()
-const NOTICE_LIFETIME_MS = 4_000
 
 /**
  * The per-session input facade: scoped-event application verbs +
@@ -85,7 +84,8 @@ export class SessionInputShell implements SessionInput {
   // production (the machine's no-clock default is a constant for pure tests).
   private readonly core = new InputMachine({ now: () => Date.now() })
   private noticeSeq = 0
-  private noticeTimer: ReturnType<typeof setTimeout> | undefined
+  private menuController: InputTriggerController | undefined
+  private menuOff: (() => void) | undefined
   private lastDraft = ''
   private imageIds: readonly DraftAttachmentId[] = []
   private disposed = false
@@ -349,15 +349,29 @@ export class SessionInputShell implements SessionInput {
   notify(level: 'info' | 'error', text: string): void {
     this.noticeSeq += 1
     this.notices.set({ level, text, seq: this.noticeSeq })
-    this.armNoticeClear()
   }
 
   // ---- wiring-layer extras (not on the frozen SessionInput face) ----
+
+  /** Clear transient feedback when the native trigger menu completes its open lifecycle. */
+  bindMenuDismissal(controller: InputTriggerController | undefined): void {
+    if (controller === undefined || controller === this.menuController) return
+    this.menuOff?.()
+    this.menuController = controller
+    let wasOpen = controller.menu.getSnapshot().open
+    this.menuOff = controller.menu.subscribe(() => {
+      const open = controller.menu.getSnapshot().open
+      if (wasOpen && !open) this.clearNotice()
+      wasOpen = open
+    })
+  }
 
   /** Teardown: abort any in-flight attempt and stop accepting async settlements. */
   dispose(): void {
     this.disposed = true
     this.clearNotice()
+    this.menuOff?.()
+    this.menuOff = undefined
     this.run(this.core.dispatch({ type: 'release' }))
   }
 
@@ -512,14 +526,7 @@ export class SessionInputShell implements SessionInput {
     }
   }
 
-  private armNoticeClear(): void {
-    if (this.noticeTimer !== undefined) clearTimeout(this.noticeTimer)
-    this.noticeTimer = setTimeout(() => { this.clearNotice() }, NOTICE_LIFETIME_MS)
-  }
-
   private clearNotice(): void {
-    if (this.noticeTimer !== undefined) clearTimeout(this.noticeTimer)
-    this.noticeTimer = undefined
     this.notices.set(null)
   }
 }

@@ -137,7 +137,10 @@ export class InputHub implements SessionInputResolver {
    */
   inputTriggers(id: SessionId): InputTriggerController | undefined {
     const actx = this.sessions().scope(id)
-    return actx === undefined ? undefined : this.controller(actx)
+    if (actx === undefined) return undefined
+    const controller = this.controller(actx)
+    this.shell(id).bindMenuDismissal(controller)
+    return controller
   }
 
   /**
