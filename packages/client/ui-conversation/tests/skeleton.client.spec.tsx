@@ -363,7 +363,7 @@ describe('ConversationRoot resident composer', () => {
   })
 
   it('owns one semantic frame containing the hero workspace and resident composer bar', () => {
-    const b = mount(sessionSnapshotOf({ composerPhase: 'blank' }), undefined, undefined, { summaryBlank: true })
+    const b = mount(sessionSnapshotOf(), undefined, undefined, { summaryBlank: true })
     const host = b.view.container.querySelector('[data-emate-composer-frame-host]')
     expect(host?.querySelector('[data-slot="conversation.hero.workspace"]')).toBeTruthy()
     expect(host?.querySelectorAll('[data-composer-card]')).toHaveLength(1)

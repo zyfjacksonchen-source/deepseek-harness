@@ -59,6 +59,10 @@ function WorkspaceProbe({ open }: EmptyWorkspaceOwnerProps) {
   )
 }
 
+function HeroContentProbe() {
+  return <section data-testid="hero-content-probe" />
+}
+
 async function bench(opts?: { blank?: boolean }) {
   const runtime = await SlotTestRuntime.create()
   runtime.ctx.provide('uiWorkspace', {
@@ -87,6 +91,23 @@ async function bench(opts?: { blank?: boolean }) {
 }
 
 describe('resident composer', () => {
+  it('declares the root Hero content slot outside the unique Composer host', async () => {
+    const runtime = await bench({ blank: true })
+    runtime.slots.register({ name: 'conversation.hero.content' }, HeroContentProbe)
+    const view = runtime.renderRoot()
+    const scroll = view.container.querySelector('[data-conversation-scroll]')!
+    const content = view.getByTestId('hero-content-probe')
+    const contentSlot = content.closest('[data-slot="conversation.hero.content"]')!
+    const seat = view.container.querySelector('[data-composer-seat]')!
+    const host = view.container.querySelector('[data-emate-composer-frame-host]')!
+
+    expect(contentSlot.parentElement).toBe(scroll)
+    expect([...scroll.children].indexOf(contentSlot)).toBeLessThan([...scroll.children].indexOf(seat))
+    expect(host.contains(content)).toBe(false)
+    expect(view.container.querySelectorAll('[data-emate-composer-frame-host]')).toHaveLength(1)
+    await runtime.dispose()
+  })
+
   it('renders the locked view state while no session exists at all', async () => {
     const runtime = await SlotTestRuntime.create()
     runtime.ctx.provide('uiWorkspace', {

@@ -121,6 +121,12 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     'main.conversation': { kind: 'single'; scope: 'session-maybe' }
     /** Strict per-Session Conversation body. */
     'conversation.session': { kind: 'single'; scope: 'session' }
+    /**
+     * Root-owned content shown only for the blank-session Hero phase. This
+     * additive seam replaces the native Hero chrome, never the session body
+     * or the resident Composer/Input owners that follow it.
+     */
+    'conversation.hero.content': { kind: 'single'; scope: 'root' }
     /** Strict per-Session title, actions, and View navigation. */
     'conversation.session.header': { kind: 'single'; scope: 'session' }
     /** Optional replacement for one Session breadcrumb title. */
@@ -368,6 +374,7 @@ export type ConversationSlotProps =
   PropsRuntime<'main.conversation'>
   & PropsRenderSlots<
     | 'conversation.session' | 'conversation.session.header'
+    | 'conversation.hero.content'
     | 'conversation.composer' | 'conversation.composer.bar'
     | 'conversation.input.dock'
     | 'conversation.hero.brand.mark'

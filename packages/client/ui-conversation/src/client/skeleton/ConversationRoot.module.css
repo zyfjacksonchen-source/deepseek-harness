@@ -450,6 +450,17 @@
   z-index: 1;
 }
 
+/* Root-owned Hero seat. The native fallback keeps the Hero shell in flow and
+   outside the semantic Composer Host, so taking this seat cannot disturb the
+   one resident Composer card below it. */
+.heroContent {
+  position: relative;
+  align-self: center;
+  flex: none;
+  width: min(calc(var(--dsh-composer-card-max-width) + 2 * var(--dsh-composer-side-clearance)), 100%);
+  z-index: 1;
+}
+
 .heroWorkspaceRow {
   display: flex;
   align-items: center;
