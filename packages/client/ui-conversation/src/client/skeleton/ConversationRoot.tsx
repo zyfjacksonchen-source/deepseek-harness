@@ -157,12 +157,12 @@ export function ConversationRoot({
   })
 
   const composerBar = (
-    <div className={clsx(css.composerStack, hero && css.composerHero)} data-emate-composer-frame-host="">
-      {hero && <HeroGlow className={css.heroGlow} />}
-      {hero && <HeroShell t={t} />}
-      {hero && heroWorkspaceRow}
+    <div className={css.composerFallback}>
       {zone !== undefined && renderSlot('conversation.input.dock', zone)}
-      {inputBar}
+      <div className={clsx(css.composerStack, hero && css.composerHero)} data-emate-composer-frame-host="">
+        {hero && heroWorkspaceRow}
+        {inputBar}
+      </div>
     </div>
   )
 
@@ -188,6 +188,14 @@ export function ConversationRoot({
       {renderSlot('conversation.session.header', {})}
       <div className={css.scrollBody} data-conversation-scroll="">
         {renderSlot('conversation.session', {})}
+        {hero && renderSlot('conversation.hero.content', {}, {
+          fallback: (
+            <div className={css.heroContent}>
+              <HeroGlow className={css.heroGlow} />
+              <HeroShell t={t} />
+            </div>
+          ),
+        })}
         {composerSeat}
       </div>
     </div>

@@ -4,6 +4,7 @@
 // owned draft, and the hero workspace picker (switching = retargetWorkspace).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
+import type { ReactNode } from 'react'
 import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-web-react'
 import {
   createSnapshotStore, EMPTY_CHAT_SNAPSHOT, EMPTY_CONVERSATION_VIEWS,
@@ -99,6 +100,8 @@ function mount(
     composerBlock?: { reason: string }
     /** Mutable view ledger used by registration-order regressions. */
     viewTabs?: ViewTab[]
+    /** Native declarative Hero content supplied by a shell. */
+    heroContent?: ReactNode
   } = {},
 ) {
   const root = sid('root')
@@ -138,7 +141,7 @@ function mount(
   /** Owner share handed to the two composer tool-row seats, per render. */
   const seatOwners: { key: string; owner: unknown }[] = []
   let pickerOwner: unknown
-  const renderSlot = ((key: string, owner: object, opts?: { only?: string }) => {
+  const renderSlot = ((key: string, owner: object, opts?: { only?: string; fallback?: ReactNode }) => {
     slotCalls.push(key)
     if (key === 'conversation.input.model' || key === 'conversation.input.plan') {
       seatOwners.push({ key, owner })
@@ -146,6 +149,9 @@ function mount(
     if (key === 'conversation.hero.workspace') {
       pickerOwner = owner
       return <div data-slot="conversation.hero.workspace" />
+    }
+    if (key === 'conversation.hero.content') {
+      return options.heroContent ?? opts?.fallback ?? null
     }
     if (key === 'conversation.session.header') {
       return (
@@ -269,6 +275,24 @@ describe('Hero chrome', () => {
 })
 
 describe('ConversationRoot resident composer', () => {
+  it('projects Hero content as a scroll sibling before the one native Composer host', () => {
+    const b = mount(conversationSnapshot({ composerPhase: 'blank' }), undefined, undefined, {
+      summaryBlank: true,
+      heroContent: <section data-testid="hero-content-probe" />,
+    })
+    const scroll = b.view.container.querySelector('[data-conversation-scroll]')!
+    const content = b.view.getByTestId('hero-content-probe')
+    const seat = b.view.container.querySelector('[data-composer-seat]')!
+    const host = b.view.container.querySelector('[data-emate-composer-frame-host]')!
+
+    expect(content.parentElement).toBe(scroll)
+    expect(seat.parentElement).toBe(scroll)
+    expect([...scroll.children].indexOf(content)).toBeLessThan([...scroll.children].indexOf(seat))
+    expect(host.contains(content)).toBe(false)
+    expect(b.view.container.querySelectorAll('[data-emate-composer-frame-host]')).toHaveLength(1)
+    expect(host.children).toHaveLength(2)
+  })
+
   it('owns one semantic frame containing the hero workspace and resident composer bar', () => {
     const b = mount(conversationSnapshot({ composerPhase: 'blank' }), undefined, undefined, { summaryBlank: true })
     const host = b.view.container.querySelector('[data-emate-composer-frame-host]')

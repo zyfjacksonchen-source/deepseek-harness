@@ -43,6 +43,12 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      */
     'conversation.session': { kind: 'single'; scope: 'session' }
     /**
+     * Root-owned content shown only for the blank-session Hero phase. This
+     * additive seam replaces the native Hero chrome, never the session body
+     * or the resident Composer/Input owners that follow it.
+     */
+    'conversation.hero.content': { kind: 'single'; scope: 'root' }
+    /**
      * The strip above the session's scrollport: title, view tabs, and the
      * action row. Taking this seat means rendering all three yourself, and it
      * also collapses `conversation.session.header.actions` — that additive
@@ -569,6 +575,7 @@ export interface ComposerChainProps {
 export type ConversationSlotProps =
   PropsRuntime<'conversation'> & PropsRenderSlots<
     | 'conversation.session' | 'conversation.session.header'
+    | 'conversation.hero.content'
     | 'conversation.composer' | 'conversation.composer.bar'
     | 'conversation.input.overlay'
     | 'conversation.input.dock' | 'conversation.composer.dock'

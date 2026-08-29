@@ -184,8 +184,9 @@
   min-height: 0;
 }
 
-/* Composer context stack (Figma 9:937): standalone dock cards share one
-   rhythm above the input card. */
+/* One chain fallback owns the dock-to-card rhythm while the semantic Host
+   remains the smaller stack containing only Workspace chrome and InputBar. */
+.composerFallback,
 .composerStack {
   /* Horizontal geometry (card width, clearance, dock inset) rides the shared
      .root variables above so takeover siblings match the stack. */
@@ -311,10 +312,9 @@
    NOT absolute+transform: a transform would make this box the containing
    block for position:fixed descendants (pickers/modals), shrinking them. */
 .composerHero {
-  position: relative; /* .heroGlow positioning context */
   align-self: center;
-  /* figma 75:8208 drew 12 between all three rows; the workspace row now sits
-     8 above the card (its margin-top restores 12 under the hero chrome). */
+  /* figma 75:8208 drew 12 between the dock/card rows; the workspace row now
+     sits 8 above the card inside the semantic Host. */
   gap: 8px;
   /* Foot inside the centered box floats the stack a bit above true center. */
   padding-bottom: 32px;
@@ -324,15 +324,20 @@
   z-index: 1;
 }
 
-/* Blue backdrop ellipse (figma 313:14109), centered on the input card: the
-   card's resting center sits ~92px above the stack bottom (32 foot pad +
-   half of the ~120px two-row card); width tracks the card (glow asset 1051
-   vs design card 776) so blur scales in userSpace with it. z-index -1 keeps
-   it behind the in-flow hero content inside this stacking context. */
+.heroContent {
+  position: relative;
+  align-self: center;
+  flex: none;
+  width: min(calc(var(--dsh-composer-card-max-width) + 2 * var(--dsh-composer-side-clearance)), 100%);
+  z-index: 1;
+}
+
+/* Native fallback glow stays with its Hero content and outside the semantic
+   Composer Host. Its overflow still reaches the resident card below. */
 .heroGlow {
   position: absolute;
   left: 50%;
-  bottom: 92px;
+  bottom: -112px;
   z-index: -1;
   width: calc(100% * 1051 / 776);
   aspect-ratio: 1051 / 468;
