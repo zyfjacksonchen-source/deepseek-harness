@@ -3,7 +3,7 @@
 // API: the strict session API (views triple, draft mirror), the
 // provide-channel input face (machine-sink submit choreography incl.
 // optimistic clear + failure restore), the resident API (selectWorkspace
-// draft carrying), the composer-bar stop face, openDetails = select action +
+// session isolation), the composer-bar stop face, openDetails = select action +
 // layout orchestration, and the closeDetails details API. Complements
 // chat-apply.spec.tsx (registration) and selection-survival.spec.tsx (store
 // axis). History opening is NOT an inject concern — the runtime sessions
@@ -112,11 +112,12 @@ async function bench() {
   const inputApi = (id: SessionId) => {
     const info = runtime.sessions.provideInfo(id)!
     const state = info.hooks['input'] as {
-      getSnapshot: () => { draft: string }
+      getSnapshot: () => { draft: string; imageIds: readonly string[] }
       subscribe: (fn: () => void) => () => void
     }
     const actions = info.props['inputActions'] as {
       setDraft: (text: string) => void
+      addImages: (ids: readonly string[]) => boolean
       submit: () => void
     }
     return { state, actions }
@@ -240,31 +241,35 @@ describe('conversation slot inject API', () => {
     await b.runtime.dispose()
   })
 
-  it('routes workspace switching through the runtime owner, carrying the draft', async () => {
+  it('routes workspace switching without moving another session draft or attachments', async () => {
     const b = await bench()
     const resident = b.residentApi(ROOT)
     // Same-session connect (the picked workspace resolves to this session):
     // no draft movement, plain re-open.
     b.runtime.workspaces.stub('connectWorkspace', () => Promise.resolve(ROOT))
     const { state, actions } = b.inputApi(ROOT)
-    actions.setDraft('carry me')
+    actions.setDraft('@')
+    expect(actions.addImages(['image-a'])).toBe(true)
     void resident.selectWorkspace('workspace-1' as never)
     await vi.waitFor(() => {
       expect(b.runtime.sessions.calls.filter(c => c.method === 'open')).toHaveLength(1)
     })
     expect(b.runtime.workspaces.calls).toContainEqual({ method: 'connectWorkspace', args: ['workspace-1'] })
-    expect(state.getSnapshot().draft).toBe('carry me')
-    // Cross-session connect: the draft MOVES — the old machine empties, the
-    // new session's machine receives the text, then navigation lands there.
+    expect(state.getSnapshot()).toMatchObject({ draft: '@', imageIds: ['image-a'] })
+    // Cross-session connect only navigates. Each session keeps its own draft
+    // and attachments; a Workspace choice is not an implicit handoff marker.
     const OTHER = 'other-1' as SessionId
     await b.runtime.sessions.add({ id: OTHER }, { current: false })
+    const other = b.inputApi(OTHER)
+    other.actions.setDraft('session B')
+    expect(other.actions.addImages(['image-b'])).toBe(true)
     b.runtime.workspaces.stub('connectWorkspace', () => Promise.resolve(OTHER))
     void resident.selectWorkspace('workspace-2' as never)
     await vi.waitFor(() => {
       expect(b.runtime.sessions.calls).toContainEqual({ method: 'open', args: [OTHER] })
     })
-    expect(state.getSnapshot().draft).toBe('')
-    expect(b.inputApi(OTHER).state.getSnapshot().draft).toBe('carry me')
+    expect(state.getSnapshot()).toMatchObject({ draft: '@', imageIds: ['image-a'] })
+    expect(other.state.getSnapshot()).toMatchObject({ draft: 'session B', imageIds: ['image-b'] })
     await b.runtime.dispose()
   })
 
