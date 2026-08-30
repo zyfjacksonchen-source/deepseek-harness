@@ -353,8 +353,9 @@ describe('Chat node rendering', () => {
     const h = makeHarness({ chat })
     render(<h.ChatView {...h.props} />)
     const first = h.turnTailOwners.find(owner => owner.turn.turn === 1)
-    expect(first?.nodes.map(node => node.kind)).toEqual(['assistant-step', 'fixture-hidden', 'turn-tail'])
-    expect(first?.nodes.every(node => (node.location.kind === 'turn' || node.location.kind === 'step')
+    if (first?.nodes === undefined) throw new Error('fixture requires Turn 1 tail nodes')
+    expect(first.nodes.map(node => node.kind)).toEqual(['assistant-step', 'fixture-hidden', 'turn-tail'])
+    expect(first.nodes.every(node => (node.location.kind === 'turn' || node.location.kind === 'step')
       && node.location.turn.turn === 1)).toBe(true)
   })
 
