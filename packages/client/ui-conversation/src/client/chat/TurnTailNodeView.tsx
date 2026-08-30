@@ -1,4 +1,4 @@
-import { memo } from 'react'
+import { memo, useMemo } from 'react'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ChatNodeViewProps, TurnTailOwnerProps } from '../contract/slots.ts'
 import { MessageIconActions } from './MessageIconActions.tsx'
@@ -13,6 +13,14 @@ export const TurnTailNodeView = memo(function TurnTailNodeView({
   node, openFile, forkAt, renderSlot, renderSlotChain, t, useSession,
 }: TurnTailNodeViewProps) {
   const data = node.data
+  const allNodes = useSession(snapshot => snapshot.chat.nodes.values())
+  const nodes = useMemo(
+    () => allNodes
+      .filter(candidate => (candidate.location.kind === 'turn' || candidate.location.kind === 'step')
+        && candidate.location.turn.turn === data.turn)
+      .sort((left, right) => left.anchorSeq - right.anchorSeq || left.key.localeCompare(right.key)),
+    [allNodes, data.turn],
+  )
   const hasLaterChatNode = useSession(snapshot =>
     snapshot.chat.locations.getTurn(data.turn).at(-1) !== node.key)
   const turn = node.location.kind === 'turn' || node.location.kind === 'step'
@@ -20,7 +28,7 @@ export const TurnTailNodeView = memo(function TurnTailNodeView({
     : undefined
   if (turn === undefined) return null
   const closing = data.closing
-  const owner: TurnTailOwnerProps = { turn, seq: closing?.finalNode.seq ?? data.seq, openFile }
+  const owner: TurnTailOwnerProps = { turn, seq: closing?.finalNode.seq ?? data.seq, nodes, openFile }
   const tail = renderSlotChain('conversation.chat.turnTail', owner)
   if (closing === null) return tail === null ? null : <div className={css.root}>{tail}</div>
   const runMs = turn.start === undefined || turn.end === undefined

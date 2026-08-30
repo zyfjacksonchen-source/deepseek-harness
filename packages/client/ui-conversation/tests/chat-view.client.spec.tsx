@@ -17,7 +17,8 @@ import {
 } from '@deepseek-ai/dsh-client-runtime/client'
 import { RpcId } from '@deepseek-ai/dsh-client-connection/client'
 import type {
-  ChatNode, ChatNodeOwnerProps, ChatNodeViewProps, ChatViewSlotProps, SelectionTarget, UseChatNodeTurnData,
+  ChatNode, ChatNodeOwnerProps, ChatNodeViewProps, ChatViewSlotProps, SelectionTarget, TurnTailOwnerProps,
+  UseChatNodeTurnData,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { makeTranslate } from '@deepseek-ai/dsh-client-test-runtime'
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
@@ -32,6 +33,7 @@ import {
 } from '../src/client/chat/MessageItem.tsx'
 import { TurnTailNodeView } from '../src/client/chat/TurnTailNodeView.tsx'
 import { formatRunDuration } from '../src/client/chat/message-chrome.ts'
+import { ChatSnapshotBuilder } from '../src/client/conversation-nodes/chat-snapshot-builder.ts'
 import { chatSnapshotFixture } from './chat-snapshot-fixture.client.ts'
 
 afterEach(() => {
@@ -174,9 +176,13 @@ function makeHarness(init?: Partial<ConversationSnapshot>) {
     openFile: ChatNodeOwnerProps['openFile']
     inspectCall: ChatNodeOwnerProps['inspectCall']
   }> = []
+  const turnTailOwners: TurnTailOwnerProps[] = []
   const renderCommandSlot = ((_key: string, _owner: object, opts?: { fallback?: React.ReactNode }) =>
     opts?.fallback ?? null) as unknown as React.ComponentProps<typeof CommandNodeView>['renderSlot']
-  const renderTurnTail = ((_key: string, _owner: object) => null) as unknown as
+  const renderTurnTail = ((_key: string, owner: TurnTailOwnerProps) => {
+    turnTailOwners.push(owner)
+    return null
+  }) as unknown as
     React.ComponentProps<typeof TurnTailNodeView>['renderSlotChain']
   const renderTurnTailSlot = (() => null) as unknown as
     React.ComponentProps<typeof TurnTailNodeView>['renderSlot']
@@ -295,7 +301,7 @@ function makeHarness(init?: Partial<ConversationSnapshot>) {
   const setSelection = (next: SelectionTarget | null): void => { chat.actions.select(next) }
   return {
     set, ChatView, props, openDetails, openFile, loadOlder, inspectCall,
-    chatScroll, forkAt, setSelection, toolOwners,
+    chatScroll, forkAt, setSelection, toolOwners, turnTailOwners,
   }
 }
 
@@ -326,6 +332,31 @@ function installScrollMetrics(element: HTMLElement, initialHeight: number, clien
 }
 
 describe('Chat node rendering', () => {
+
+  it('passes only the current Turn Chat nodes through the turn-tail owner currency', () => {
+    const base = chatSnapshotFixture({
+      nodes: [assistant(2, 'first', 1), assistant(5, 'second', 2)],
+      turnEnds: new Map([[1, 3], [2, 6]]),
+    })
+    const firstTurn = base.timeline.turns.get(1)
+    if (firstTurn === undefined) throw new Error('fixture requires Turn 1')
+    const chat = new ChatSnapshotBuilder().replace({
+      nodes: [
+        ...base.nodes.values(),
+        {
+          key: 'fixture:hidden:turn-1', kind: 'fixture-hidden', id: 'turn-1', target: 'chat',
+          anchorSeq: 2.5, location: { kind: 'turn', turn: firstTurn }, visibility: 'hidden', data: {},
+        },
+      ],
+      timeline: base.timeline,
+    })
+    const h = makeHarness({ chat })
+    render(<h.ChatView {...h.props} />)
+    const first = h.turnTailOwners.find(owner => owner.turn.turn === 1)
+    expect(first?.nodes.map(node => node.kind)).toEqual(['assistant-step', 'fixture-hidden', 'turn-tail'])
+    expect(first?.nodes.every(node => (node.location.kind === 'turn' || node.location.kind === 'step')
+      && node.location.turn.turn === 1)).toBe(true)
+  })
 
   it('threads the injected file-mention vocabulary into the closing prose only', () => {
     const wrote = (seq: number, callId: string, path: string): ToolResultNode => ({

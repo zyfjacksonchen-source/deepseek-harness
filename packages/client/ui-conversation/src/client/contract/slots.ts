@@ -6,7 +6,7 @@ import type {
   SlotHookFactory, SnapshotSelectorHook,
 } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
-  CommandNode, CompactionSummaryNode, ConversationSnapshot, ConversationTurnDataMap,
+  ChatConversationViewNode, CommandNode, CompactionSummaryNode, ConversationSnapshot, ConversationTurnDataMap,
   ObservableSnapshot, PendingInteraction, PendingWait, SessionId, ToolCallBlock,
   TurnLocation, WorkspaceId,
 } from '@deepseek-ai/dsh-client-runtime/client'
@@ -329,6 +329,11 @@ export interface TurnTailOwnerProps {
   turn: TurnLocation
   /** The closing assistant's seq — the anchor the tail renders under. */
   seq: number
+  /**
+   * Ordered visible and hidden Chat Nodes owned by this Turn. Turn-tail chain
+   * dispatch provides them; closing-prose/file-mention calls may omit them.
+   */
+  nodes?: readonly ChatConversationViewNode[]
   /**
    * Open a filesystem path through the Host (tool-row semantics; the chat
    * view resolves relative paths against the session cwd).
