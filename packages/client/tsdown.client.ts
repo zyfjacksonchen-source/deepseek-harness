@@ -168,6 +168,8 @@ function clientLibraryConfig(
 }
 
 function clientConfig(id: string, entry: string): UserConfig {
+  const cssRoot = process.cwd()
+  const cssFiles = new Map<string, string>()
   return {
     name: `${id}/client`,
     entry: { client: entry },
@@ -227,12 +229,17 @@ function clientConfig(id: string, entry: string): UserConfig {
       name: 'dsh-css-modules-inline',
       resolveId(source: string, importer: string | undefined) {
         if (!source.endsWith('.module.css')) return null
-        const abs = importer !== undefined ? sourceAssetPath(source, importer) : source
-        return CSS_VIRTUAL_PREFIX + abs + CSS_VIRTUAL_SUFFIX
+        const fileId = resolvePath(importer !== undefined ? sourceAssetPath(source, importer) : source)
+        const virtualId = CSS_VIRTUAL_PREFIX
+          + relative(cssRoot, fileId).split(sep).join('/')
+          + CSS_VIRTUAL_SUFFIX
+        cssFiles.set(virtualId, fileId)
+        return virtualId
       },
       async load(virtualId: string) {
         if (!virtualId.startsWith(CSS_VIRTUAL_PREFIX)) return null
-        const fileId = virtualId.slice(CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
+        const fileId = cssFiles.get(virtualId)
+        if (fileId === undefined) return null
         // The virtual id otherwise hides the physical stylesheet from Rolldown's watch graph.
         this.addWatchFile(fileId)
         const source = await readFile(fileId)

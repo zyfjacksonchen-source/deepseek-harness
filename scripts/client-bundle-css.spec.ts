@@ -2,9 +2,10 @@
  * CSS Modules enter client bundles through virtual modules, so the loader must
  * explicitly register the underlying stylesheet as a watch dependency.
  */
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Rolldown } from 'tsdown'
 import { describe, expect, it } from 'vitest'
 import { clientBundle } from '../packages/client/tsdown.client.ts'
 
@@ -28,6 +29,31 @@ function cssPlugin(): CssPlugin {
 }
 
 describe('client bundle CSS Modules', () => {
+  it('keeps the physical source path out of generated chunks', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-client-css-bundle-'))
+    const sourceRoot = join(root, 'C:\\Users\\builder\\project')
+    const previousCwd = process.cwd()
+    try {
+      await mkdir(sourceRoot)
+      const stylesheet = join(sourceRoot, 'Fixture.module.css')
+      const importer = join(sourceRoot, 'index.ts')
+      await writeFile(stylesheet, '.root { color: red; }\n')
+      await writeFile(importer, "import styles from './Fixture.module.css'; export default styles.root\n")
+      process.chdir(sourceRoot)
+
+      const bundle = await Rolldown.rolldown({ input: importer, plugins: [cssPlugin()] })
+      const generated = await bundle.generate({ format: 'esm' })
+      const output = generated.output.find(candidate => candidate.type === 'chunk')
+
+      expect(output?.code).toContain('data-plugin-css')
+      expect(output?.code).not.toContain('C:\\Users\\builder')
+      expect(Buffer.from(output?.code ?? '').includes(Buffer.from('C:\\Users\\builder', 'utf16le'))).toBe(false)
+    } finally {
+      process.chdir(previousCwd)
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('registers the source stylesheet as a watch dependency', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-client-css-watch-'))
     try {
