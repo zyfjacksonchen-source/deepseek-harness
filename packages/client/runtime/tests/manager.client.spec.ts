@@ -442,6 +442,61 @@ describe('subagent catalogs', () => {
     }
   })
 
+  it('refetches a selected parent catalog when a new child publishes its identity projection', async () => {
+    vi.useFakeTimers()
+    try {
+      const api = new FakeApiClient()
+      const root = 'fk-root' as SessionId
+      let childVisible = false
+      api.onSubagentList = () => Promise.resolve(ok({
+        entries: childVisible ? [{
+          kind: 'child', id: S2, mode: 'one-shot', label: 'image worker',
+          activity: 'running', hasChildren: false,
+        }] as never[] : [],
+        parentAvailable: true,
+      }))
+      const manager = new SessionManager(api, fakeRemote(), root)
+
+      manager.handleHostEnvelope({
+        rpcId: 'child-added' as never,
+        payload: {
+          type: 'host/session-added', sessionId: S2, parentSessionId: root,
+          origin: 'subagent', blank: false,
+        },
+      })
+      await vi.advanceTimersByTimeAsync(50)
+      expect(api.callsOf('subagent.list')).toHaveLength(1)
+      expect(manager.getListSnapshot().subagentsByParent[root]?.entries).toEqual([])
+
+      childVisible = true
+      manager.handleMuxEnvelope({
+        rpcId: 'child-identity' as never,
+        payload: {
+          type: 'session/projection', sessionId: S2, key: 'subagent',
+          value: { parentSessionId: root }, seq: 6,
+        } as never,
+      })
+      await vi.advanceTimersByTimeAsync(50)
+
+      expect(api.callsOf('subagent.list')).toHaveLength(2)
+      expect(manager.getListSnapshot().subagentsByParent[root]?.entries).toMatchObject([
+        { kind: 'child', id: S2, label: 'image worker' },
+      ])
+
+      const receipts = [{ seq: 87, createdAt: 1234, receipt: { call_id: 'image-1' } }]
+      manager.handleMuxEnvelope({
+        rpcId: 'child-receipt' as never,
+        payload: {
+          type: 'session/projection', sessionId: S2, key: 'eMateImageReceipts', value: receipts, seq: 87,
+        } as never,
+      })
+      expect(manager.getListSnapshot().items.find(item => item.sessionId === S2)?.projectionValues)
+        .toMatchObject({ eMateImageReceipts: receipts })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('marks a loaded parent row expandable only for a direct subagent publication', async () => {
     const api = new FakeApiClient()
     const root = 'fk-root' as SessionId

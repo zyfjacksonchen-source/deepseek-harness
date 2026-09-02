@@ -700,6 +700,14 @@ export class SessionManager {
       // store's own any-key channel is microtask-batched).
       this.projectionStore(frame.sessionId).apply(frame.key, frame.value, frame.seq)
       this.notifier.markDirty()
+      if (frame.key === 'subagent') {
+        const child = this.summaries.find(summary => summary.sessionId === frame.sessionId)
+        const parentSessionId = child?.origin === 'subagent' ? child.parentSessionId : undefined
+        if (parentSessionId !== undefined
+          && (this.selected === parentSessionId || this.openCatalogs.has(parentSessionId))) {
+          this.scheduleCatalogRefresh(parentSessionId)
+        }
+      }
       return
     }
     if (frame.type === 'session/jobs') {
