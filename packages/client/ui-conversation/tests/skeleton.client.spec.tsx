@@ -362,11 +362,20 @@ describe('ConversationRoot resident composer', () => {
     expect(dispatchCount()).toBe(before)
   })
 
-  it('owns one semantic frame containing the hero workspace and resident composer bar', () => {
-    const b = mount(sessionSnapshotOf(), undefined, undefined, { summaryBlank: true })
-    const host = b.view.container.querySelector('[data-emate-composer-frame-host]')
-    expect(host?.querySelector('[data-slot="conversation.hero.workspace"]')).toBeTruthy()
-    expect(host?.querySelectorAll('[data-composer-card]')).toHaveLength(1)
+  it('owns one semantic frame holding exactly the resident Composer card', () => {
+    // The frame is the single anchor a product composer styles against; it must
+    // exist in every phase and wrap exactly one Composer card, never a second.
+    const active = mount(sessionSnapshotOf())
+    const activeHost = active.view.container.querySelectorAll('[data-emate-composer-frame-host]')
+    expect(activeHost).toHaveLength(1)
+    expect(activeHost[0]!.querySelectorAll('[data-composer-card]')).toHaveLength(1)
+
+    // The Hero phase reuses the same host: the workspace row joins it rather
+    // than opening a second frame.
+    const hero = mount(sessionSnapshotOf(), undefined, undefined, { summaryBlank: true })
+    const heroHost = hero.view.container.querySelectorAll('[data-emate-composer-frame-host]')
+    expect(heroHost).toHaveLength(1)
+    expect(heroHost[0]!.querySelectorAll('[data-composer-card]')).toHaveLength(1)
   })
 
   it('renders the composer inert with the blocker\u2019s own reason', () => {

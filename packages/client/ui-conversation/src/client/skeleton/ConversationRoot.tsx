@@ -345,6 +345,7 @@ export function ConversationRoot({
 
   const composerBar = (
     <div className={clsx(css.composerStack, hero && css.composerHero)} data-emate-composer-frame-host="">
+      {hero && <HeroShell t={t} renderSlot={renderSlot} />}
       {hero && heroWorkspaceRow}
       {zone !== undefined && renderSlot('conversation.input.dock', zone)}
       {inputBar}
@@ -374,13 +375,7 @@ export function ConversationRoot({
       <div className={css.body}>
         <div className={css.scrollBody} data-conversation-scroll="">
           {sessionId === undefined ? null : renderSlot('conversation.session', {})}
-          {hero && renderSlot('conversation.hero.content', {}, {
-            fallback: (
-              <div className={css.heroContent}>
-                <HeroShell t={t} renderSlot={renderSlot} />
-              </div>
-            ),
-          })}
+          {hero && renderSlot('conversation.hero.content', {})}
           {composerSeat}
         </div>
         {/* Width handles only while a transcript is on screen; the hero has no
