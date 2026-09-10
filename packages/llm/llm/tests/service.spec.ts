@@ -16,9 +16,9 @@ import LlmRuntime, {
   StreamChunk,
   createMessage,
   createUserMessage,
-  deepFreeze,
   markAgentLoopRequest,
 } from '@deepseek-ai/dsh-llm'
+import { deepFreeze } from '@deepseek-ai/dsh-util-values'
 import type {
   LlmModelContext,
   LlmModelInfo,
