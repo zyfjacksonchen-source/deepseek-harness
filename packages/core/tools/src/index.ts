@@ -5,6 +5,7 @@
  */
 
 import { Context, Service } from '@deepseek-ai/cordis'
+import type { Fiber } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { AnonymousEntries, NamedEntries, ScopedLayers, scopeOf, scopeTarget } from '@deepseek-ai/dsh-scope'
 import type { ScopeKey, ScopeLayer, Scoped } from '@deepseek-ai/dsh-scope'
@@ -777,6 +778,29 @@ function resolveMaxParallelSubCalls(value: number | undefined): number {
  * Tool registry and execution pipeline. Scoped registrations shadow globals;
  * one visibility resolver feeds presentation, lookup, and dispatch.
  */
+/** One tool registration's Loader identity, captured at registration time. */
+export interface ToolRegistrationProvenance {
+  /** Exact module specifier from the registration fiber's Loader entry. */
+  readonly moduleSpecifier: string
+  /** Cordis plugin name of the registration fiber. */
+  readonly pluginName: string
+}
+
+/** The only Loader surface used by tools; keeps Loader an optional host concern. */
+type LoaderBackedFiber = Fiber & {
+  readonly entry?: { readonly options: { readonly name: string } }
+}
+
+/** Copy Loader identity at registration so later Entry mutation cannot drift it. */
+function captureRegistrationProvenance(ctx: Context): ToolRegistrationProvenance | undefined {
+  const fiber = ctx.fiber as LoaderBackedFiber
+  if (fiber.entry === undefined) return undefined
+  return Object.freeze({
+    moduleSpecifier: fiber.entry.options.name,
+    pluginName: fiber.name,
+  })
+}
+
 export class ToolRuntime extends Service {
   static inject = ['systemPrompt']
 
@@ -815,6 +839,12 @@ export class ToolRuntime extends Service {
    * transport is stateless beyond its closures over `this`.
    */
   private ptcTransport: ToolDefinition | undefined
+  /**
+   * Loader identity per registered definition. Keyed by the definition object
+   * the registry already stores, so the visible/known surfaces keep their exact
+   * ToolDefinition contract and no wrapper type is introduced.
+   */
+  private readonly provenanceByTool = new WeakMap<ToolDefinition, ToolRegistrationProvenance>()
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx, 'tools')
@@ -1044,6 +1074,8 @@ export class ToolRuntime extends Service {
     if (name === RUN_CODE_NAME) {
       throw new Error(`tool name "${RUN_CODE_NAME}" is reserved for the PTC mode presentation transport and cannot be registered or shadowed`)
     }
+    const provenance = captureRegistrationProvenance(this.ctx)
+    if (provenance !== undefined) this.provenanceByTool.set(definition, provenance)
     return this.layers.effect(
       this.ctx,
       layer => layer.tools.insert(name, definition),
@@ -1193,6 +1225,20 @@ export class ToolRuntime extends Service {
    */
   get(name: string, scope?: ScopeKey): ToolDefinition | undefined {
     return this.view(scope).visible.get(name)
+  }
+
+  /**
+   * Read the Loader identity captured by the tool registration currently
+   * visible to one scope. Scoped shadows and restrictions use the same winner
+   * as {@link get}; direct registrations without a Loader entry are
+   * intentionally unattributed, and never fall back to a hidden registration.
+   * @param name - the tool name as registered.
+   * @param scope - the viewing scope (the agent); omitted = the global view.
+   * @returns the visible winner's frozen registration identity, or undefined.
+   */
+  provenance(name: string, scope?: ScopeKey): ToolRegistrationProvenance | undefined {
+    const definition = this.view(scope).visible.get(name)
+    return definition === undefined ? undefined : this.provenanceByTool.get(definition)
   }
 
   /**
