@@ -2,6 +2,16 @@ import { SessionFormatError, isSessionFormatJsonObject } from '@deepseek-ai/dsh-
 import type { SessionFormatJsonValue } from '@deepseek-ai/dsh-session-format'
 
 /**
+ * `subagent/descriptor` payload versions a released v0 writer actually stamped.
+ * The descriptor format advanced from 2 to 3 on 2026-08-24, while
+ * `SESSION_FORMAT_VERSION` stayed 0 until the v0-to-v1 edge shipped on
+ * 2026-08-31, so both versions occur in released v0 artifacts. A reader for a
+ * released generation admits exactly what that generation wrote; a version
+ * outside this enumeration stays refused.
+ */
+export const RELEASED_V0_DESCRIPTOR_VERSIONS: ReadonlySet<number> = new Set([2, 3])
+
+/**
  * Require one plain JSON object.
  * @param value - candidate JSON value.
  * @param label - diagnostic subject.

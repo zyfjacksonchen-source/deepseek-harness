@@ -4,7 +4,7 @@ import type {
   SessionFormatEvent,
   SessionFormatJsonValue,
 } from '@deepseek-ai/dsh-session-format'
-import { assertReleasedV0Keys, releasedV0Record } from './validation-helpers.ts'
+import { assertReleasedV0Keys, RELEASED_V0_DESCRIPTOR_VERSIONS, releasedV0Record } from './validation-helpers.ts'
 
 type JsonRecord = Record<string, SessionFormatJsonValue>
 
@@ -953,7 +953,7 @@ function modelRouteValue(value: SessionFormatJsonValue | undefined, label: strin
 }
 
 function subagentDescriptorValue(data: JsonRecord, label: string): void {
-  literalValue(data['version'], [3], `${label} version`)
+  literalValue(data['version'], [...RELEASED_V0_DESCRIPTOR_VERSIONS], `${label} version`)
   nonEmptyString(data['provider'], `${label} provider`)
   if (data['mode'] === 'one-shot') {
     assertReleasedV0Keys(data, ['mode', 'version', 'provider'], ['label'], `${label} data`)
