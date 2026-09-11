@@ -175,11 +175,16 @@ export class HostConnectionService extends Service implements HostConnectionHand
         await bridge(req, res, fetchHandler)
       },
     }
-    // The Context reading this service injects only credentials, so the route must be
-    // registered inside a webServer scope, like the shared API route in index.ts.
+    // The Context reading this service injects only credentials, so `owner.webServer`
+    // would be refused. Register through the resolved service when it is already there,
+    // which keeps registration synchronous for every existing caller, and fall back to an
+    // injected scope when the web server has not been provided yet.
+    const label = `client-connection: ${channel} rpc channel`
+    const webServer = owner.get?.('webServer')
+    if (webServer !== undefined) return owner.effect(() => webServer.register(route), label)
     const scope = owner.inject(['webServer'], webCtx => webCtx.effect(
       () => webCtx.webServer.register(route),
-      `client-connection: ${channel} rpc channel`,
+      label,
     ))
     return async () => { scope.dispose() }
   }
