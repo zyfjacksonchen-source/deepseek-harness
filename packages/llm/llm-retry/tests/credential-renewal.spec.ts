@@ -22,12 +22,7 @@ import * as Retry from '../src/index.ts'
 class RotatingCredentials extends MemoryCredentials {
   readonly issued: string[] = []
 
-  constructor(ctx: Context, options: { ref: string; values: readonly string[] }) {
-    super(ctx, { [options.ref]: options.values[0]! })
-    this.options = options
-  }
-
-  private readonly options: { ref: string; values: readonly string[] }
+  private readonly options = ROTATING
 
   override resolveCurrent(ref: CredentialRef): Promise<ResolvedCredential | undefined> {
     const value = this.options.values[Math.min(this.issued.length, this.options.values.length - 1)]!
@@ -44,7 +39,7 @@ class FailingRenewalCredentials extends MemoryCredentials {
 }
 
 const REF = 'ROTATING_MODEL_TOKEN'
-const ROTATING = { ref: REF, values: ['token-1', 'token-2'] }
+const ROTATING: { ref: string; values: readonly string[] } = { ref: REF, values: ['token-1', 'token-2'] }
 const STATIC = { [REF]: 'token-1' }
 
 let context: Context | undefined
@@ -68,7 +63,7 @@ async function start(
 async function harness(
   baseURL: string,
   provider: typeof MemoryCredentials,
-  config: unknown,
+  config: Record<string, string> | undefined,
 ): Promise<{ ctx: Context; credentials: RotatingCredentials }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
@@ -87,7 +82,7 @@ async function harness(
   return { ctx, credentials: ctx.credentials as RotatingCredentials }
 }
 
-function sendAndWait(ctx: Context, agent: Agent): Promise<void> {
+function sendAndWait(_ctx: Context, agent: Agent): Promise<void> {
   agent.followup(createUserMessage({
     content: [{ type: 'text', text: 'authenticate through the provider boundary' }],
     source: { kind: 'user' },
@@ -111,7 +106,7 @@ function authorizationHeaders(server: MockLlmServer): (string | undefined)[] {
 describe('the model path authenticates each attempt with the credential issued for it', () => {
   it('sends the value the provider made current, not the stored one', async () => {
     const server = await start(['success'], { successText: 'renewed before the request' })
-    const { ctx, credentials } = await harness(server.baseURL, RotatingCredentials, ROTATING)
+    const { ctx, credentials } = await harness(server.baseURL, RotatingCredentials, STATIC)
     const agent = await ctx.agentLoop.create(SessionId('renew-before-request'), {
       provider: 'deepseek-official',
       model: 'mock-model',
@@ -131,7 +126,7 @@ describe('the model path authenticates each attempt with the credential issued f
       disconnectDelayMs: 20,
       successText: 'recovered under a renewed credential',
     })
-    const { ctx, credentials } = await harness(server.baseURL, RotatingCredentials, ROTATING)
+    const { ctx, credentials } = await harness(server.baseURL, RotatingCredentials, STATIC)
     const agent = await ctx.agentLoop.create(SessionId('renew-per-attempt'), {
       provider: 'deepseek-official',
       model: 'mock-model',
