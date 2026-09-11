@@ -449,7 +449,10 @@ export function apply(ctx: Context, config: Config): void {
     const ref = connection.apiKeyEnv
     const credentials = ctx.get('credentials')
     if (credentials !== undefined) {
-      const hit = await credentials.resolve(ref)
+      // Resolved for use, not merely read: a reference to a rotating credential
+      // is renewed here when its own margin says the stored value is due, so
+      // this attempt never authenticates with a value already known stale.
+      const hit = await credentials.resolveCurrent(ref)
       if (hit !== undefined) return assertUsableApiKey(hit.value, 'llm-deepseek', ref)
     } else {
       // Without the seam there is no managed store to rank against, so the

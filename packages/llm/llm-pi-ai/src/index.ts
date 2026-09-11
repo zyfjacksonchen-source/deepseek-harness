@@ -178,7 +178,10 @@ export function apply(ctx: Context, config: Config): void {
     if (ref === undefined) return undefined
     const credentials = ctx.get('credentials')
     const hit = credentials !== undefined
-      ? (await credentials.resolve(ref))?.value
+      // One resolution per stream call, and the value is made current first: a
+      // route authenticated by a reference to a rotating credential must not
+      // spend this attempt on a value the provider already knows is stale.
+      ? (await credentials.resolveCurrent(ref))?.value
       // Without the seam the environment is the whole credential plane.
       : launchEnvironmentOf(ctx).get(ref)?.value
     if (hit !== undefined && hit.length > 0) return assertUsableApiKey(hit, 'llm-pi-ai', ref)

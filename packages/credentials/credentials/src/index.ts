@@ -183,6 +183,34 @@ export abstract class CredentialProvider extends Service {
   abstract resolve(ref: CredentialRef): Promise<ResolvedCredential | undefined>
 
   /**
+   * Resolve one reference to the value a request must authenticate with now,
+   * renewing a rotating credential this provider owns while its stored value is
+   * no longer usable.
+   *
+   * {@link resolve} reads what is stored. That is the whole truth for a secret
+   * a human or an administrator rotates by hand, but a value that rotates on
+   * its own schedule — an OAuth access token, a gateway session token carrying
+   * its own expiry — can be stored and already unusable, and only this
+   * provider can replace it. A caller about to authenticate one request calls
+   * this instead of {@link resolve} so a value that expired while nothing was
+   * watching is renewed at the moment of use rather than failing the request.
+   *
+   * The default delegates to {@link resolve}: a provider holding no rotating
+   * value has nothing to renew and behaves exactly as before. A provider that
+   * overrides this must renew only when its own margin says the value is due,
+   * so the per-request cost stays a local check with no round trip; a renewal
+   * that cannot complete rejects, because falling back to a value this provider
+   * just judged unusable would authenticate the request with a credential it
+   * already knows is stale.
+   * @param ref - the reference to resolve for use.
+   * @returns the value and its source once the stored value is usable, or
+   *   `undefined` while unconfigured.
+   */
+  resolveCurrent(ref: CredentialRef): Promise<ResolvedCredential | undefined> {
+    return this.resolve(ref)
+  }
+
+  /**
    * Describe one reference for configuration surfaces without exposing the
    * value.
    * @param ref - the reference to describe.
