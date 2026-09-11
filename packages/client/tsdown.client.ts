@@ -357,6 +357,16 @@ function workspaceManifest(id: string): WorkspaceManifest {
     manifestCache.set(id, manifest)
     return manifest
   }
+  // A package outside this repository still builds through this preset from its
+  // own directory, where its manifest is the only declaration of its name.
+  const local = resolvePath(process.cwd(), 'package.json')
+  if (existsSync(local)) {
+    const manifest = JSON.parse(readFileSync(local, 'utf8')) as WorkspaceManifest
+    if (manifest.name === id) {
+      manifestCache.set(id, manifest)
+      return manifest
+    }
+  }
   throw new Error(`tsdown: no packages/*/*/package.json declares the name ${id}`)
 }
 
