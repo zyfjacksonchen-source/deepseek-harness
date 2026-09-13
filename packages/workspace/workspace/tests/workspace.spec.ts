@@ -942,6 +942,31 @@ describe('registry-global session archive', () => {
     expect(storedState(result.pool).archivedSessionIds).toEqual(['stray', 'live-only'])
   })
 
+  it('restores only the selected archived session and keeps its workspace position after restart', async () => {
+    const dir = await makeDir('archive-restore')
+    const pool = new MemoryMediaPool()
+    const sessions = [header('first', dir, 100), header('second', dir, 200)]
+    const first = await harness({ pool, sessions })
+    const workspace = first.registry.list()[0]!
+    const originalOrder = [...workspace.sessionIds]
+    await first.registry.archiveSession(SessionId('first'))
+    await first.registry.archiveSession(SessionId('second'))
+    await first.registry.unarchiveSession(SessionId('first'))
+    expect(first.registry.archivedSessionIds).toEqual(['second'])
+    expect(workspace.sessionIds).toEqual(originalOrder)
+    const changesAfterRestore = first.changes.length
+    await first.registry.unarchiveSession(SessionId('first'))
+    expect(first.changes).toHaveLength(changesAfterRestore)
+    await expect(first.registry.unarchiveSession(SessionId('missing'))).rejects.toThrow(/cannot restore session 'missing'/)
+    expect(storedState(pool).archivedSessionIds).toEqual(['second'])
+    await first.fiber.dispose()
+
+    const restarted = await harness({ pool, sessions })
+    expect(restarted.registry.archivedSessionIds).toEqual(['second'])
+    expect(restarted.registry.list()[0]!.sessionIds).toEqual(originalOrder)
+    expect(restarted.open).not.toHaveBeenCalled()
+  })
+
   it('propagates a persistence-listing failure instead of reporting an unknown session', async () => {
     const result = await harness({ sessions: [] })
     result.list.mockRejectedValueOnce(new Error('persistence backend down'))

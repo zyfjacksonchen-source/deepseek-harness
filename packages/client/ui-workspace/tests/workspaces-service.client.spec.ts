@@ -149,6 +149,13 @@ class FakeWorkspaces implements IWorkspaces {
     this.archiveCalls.push(sessionId)
     return this.onArchive(sessionId)
   }
+
+  async unarchiveSession(sessionId: SessionId): Promise<void> {
+    this.list.update(state => ({
+      ...state,
+      archivedSessionIds: state.archivedSessionIds.filter(id => id !== sessionId),
+    }))
+  }
 }
 
 const listing: DirectoryListing = {

@@ -380,6 +380,7 @@ interface FixtureWorkspaceApi {
   insertBefore(request: WorkspaceInsertBeforeRequest): Promise<ConnectionRpcResult<WorkspaceOrderValue>>
   insertSessionBefore(request: WorkspaceInsertSessionBeforeRequest): Promise<ConnectionRpcResult<WorkspaceValue>>
   archiveSession(request: WorkspaceArchiveSessionRequest): Promise<ConnectionRpcResult<WorkspaceArchiveValue>>
+  unarchiveSession(request: WorkspaceArchiveSessionRequest): Promise<ConnectionRpcResult<WorkspaceArchiveValue>>
 }
 
 interface FixtureWorkspace {
@@ -3798,6 +3799,21 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
       }
       return sessionOk({ archivedSessionIds: [...archivedSessionIds] })
     },
+    unarchiveSession: (request) => {
+      if (summaryOf(request.sessionId) === undefined) {
+        return sessionErr({
+          code: 'session/not-found',
+          message: `no session ${request.sessionId}`,
+          details: { sessionId: request.sessionId },
+        })
+      }
+      const at = archivedSessionIds.indexOf(request.sessionId)
+      if (at >= 0) {
+        archivedSessionIds.splice(at, 1)
+        emitWorkspace({ type: 'archived', archivedSessionIds: [...archivedSessionIds] })
+      }
+      return sessionOk({ archivedSessionIds: [...archivedSessionIds] })
+    },
   }
 
   const rpc: ClientConnectionRpc = {
@@ -3991,6 +4007,7 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
           request as WorkspaceInsertSessionBeforeRequest,
         )
         case 'workspace/archiveSession': return workspaceApi.archiveSession(request as WorkspaceArchiveSessionRequest)
+        case 'workspace/unarchiveSession': return workspaceApi.unarchiveSession(request as WorkspaceArchiveSessionRequest)
         default:
           return Promise.reject(new Error(`fixture connection RPC endpoint ${JSON.stringify(endpoint)} is unavailable`))
       }

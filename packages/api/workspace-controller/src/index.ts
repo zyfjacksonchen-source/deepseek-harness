@@ -8,6 +8,7 @@ import { WorkspaceFeed } from './feed.ts'
 import type {
   WorkspaceArchiveSessionRequest,
   WorkspaceArchiveValue,
+  WorkspaceUnarchiveSessionRequest,
   WorkspaceCreateRequest,
   WorkspaceCreateValue,
   WorkspaceDeleteRequest,
@@ -107,6 +108,12 @@ export class WorkspaceController extends TypertRemoteService {
   @Remote('archiveSession')
   archiveSession(request: WorkspaceArchiveSessionRequest): Promise<WorkspaceArchiveValue> {
     return this.commands.archiveSession(request)
+  }
+
+  /** Restore one archived Session to its existing Workspace position. */
+  @Remote('unarchiveSession')
+  unarchiveSession(request: WorkspaceUnarchiveSessionRequest): Promise<WorkspaceArchiveValue> {
+    return this.commands.unarchiveSession(request)
   }
 
   /**

@@ -13,6 +13,7 @@ import { workspaceView } from './feed.ts'
 import type {
   WorkspaceArchiveSessionRequest,
   WorkspaceArchiveValue,
+  WorkspaceUnarchiveSessionRequest,
   WorkspaceCreateRequest,
   WorkspaceCreateValue,
   WorkspaceDeleteRequest,
@@ -153,6 +154,17 @@ export class WorkspaceCommands {
   async archiveSession(request: WorkspaceArchiveSessionRequest): Promise<WorkspaceArchiveValue> {
     try {
       await this.ctx.workspaceRegistry.archiveSession(request.sessionId)
+    } catch (error) {
+      if (!(error instanceof WorkspaceUnknownSessionError)) throw error
+      throw new RemoteError('session/not-found', error.message, { sessionId: request.sessionId }, { cause: error })
+    }
+    return { archivedSessionIds: [...this.ctx.workspaceRegistry.archivedSessionIds] }
+  }
+
+  /** Restore one archived Session without changing its Workspace accounting. */
+  async unarchiveSession(request: WorkspaceUnarchiveSessionRequest): Promise<WorkspaceArchiveValue> {
+    try {
+      await this.ctx.workspaceRegistry.unarchiveSession(request.sessionId)
     } catch (error) {
       if (!(error instanceof WorkspaceUnknownSessionError)) throw error
       throw new RemoteError('session/not-found', error.message, { sessionId: request.sessionId }, { cause: error })

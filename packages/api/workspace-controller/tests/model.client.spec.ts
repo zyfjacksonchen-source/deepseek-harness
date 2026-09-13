@@ -5,6 +5,7 @@ import {
 import type {
   WorkspaceArchiveSessionRequest,
   WorkspaceArchiveValue,
+  WorkspaceUnarchiveSessionRequest,
   WorkspaceCreateRequest,
   WorkspaceCreateValue,
   WorkspaceDeleteRequest,
@@ -84,6 +85,9 @@ class FakeWorkspaceRemote implements WorkspaceRemote {
     request: WorkspaceArchiveSessionRequest,
   ) => Promise<RemoteResult<WorkspaceArchiveValue>> = request =>
     Promise.resolve(remoteOk({ archivedSessionIds: [request.sessionId] }))
+  onUnarchiveSession: (
+    _request: WorkspaceUnarchiveSessionRequest,
+  ) => Promise<RemoteResult<WorkspaceArchiveValue>> = () => Promise.resolve(remoteOk({ archivedSessionIds: [] }))
 
   create(request: WorkspaceCreateRequest): Promise<RemoteResult<WorkspaceCreateValue>> {
     this.record('create', request)
@@ -113,6 +117,11 @@ class FakeWorkspaceRemote implements WorkspaceRemote {
   archiveSession(request: WorkspaceArchiveSessionRequest): Promise<RemoteResult<WorkspaceArchiveValue>> {
     this.record('archiveSession', request)
     return this.onArchiveSession(request)
+  }
+
+  unarchiveSession(request: WorkspaceUnarchiveSessionRequest): Promise<RemoteResult<WorkspaceArchiveValue>> {
+    this.record('unarchiveSession', request)
+    return this.onUnarchiveSession(request)
   }
 
   async *follow(_signal?: AbortSignal): AsyncGenerator<WorkspaceFollowFrame> {}
@@ -165,6 +174,19 @@ describe('ClientWorkspaceModel', () => {
     expect(() => { model.handleStreamFailure('plain failure') }).toThrow()
     baseline(model, [workspace('restored')])
     expect(model.getSnapshot()).toMatchObject({ phase: 'ready', state: 'idle', error: null })
+  })
+
+  it('does not let a delayed restore echo undo a newer archive frame', async () => {
+    const remote = new FakeWorkspaceRemote()
+    const model = modelFor(remote)
+    baseline(model, [], [sid('legacy'), sid('other')])
+    const delayed = deferred<RemoteResult<WorkspaceArchiveValue>>()
+    remote.onUnarchiveSession = () => delayed.promise
+    const restore = model.unarchiveSession(sid('legacy'))
+    model.replaceArchived([sid('other'), sid('newer')])
+    delayed.resolve(remoteOk({ archivedSessionIds: [sid('other')] }))
+    await expect(restore).resolves.toMatchObject({ ok: true })
+    expect(model.getSnapshot().archivedSessionIds).toEqual(['other', 'newer'])
   })
 
   it('creates by path and prepends the returned row', async () => {
@@ -306,6 +328,14 @@ describe('ClientWorkspaceModel', () => {
     remote.onArchiveSession = request => Promise.resolve(remoteOk({ archivedSessionIds: [request.sessionId] }))
     await expect(model.archiveSession(sid('fresh'))).resolves.toMatchObject({ ok: true })
     expect(model.getSnapshot().archivedSessionIds).toEqual(['fresh'])
+    remote.onUnarchiveSession = () => Promise.resolve(workspaceError(
+      new RemoteError('session/not-found', 'missing', { sessionId: sid('missing') }),
+    ))
+    await expect(model.unarchiveSession(sid('missing'))).resolves.toMatchObject({ ok: false })
+    expect(model.getSnapshot().archivedSessionIds).toEqual(['fresh'])
+    remote.onUnarchiveSession = () => Promise.resolve(remoteOk({ archivedSessionIds: [] }))
+    await expect(model.unarchiveSession(sid('fresh'))).resolves.toMatchObject({ ok: true })
+    expect(model.getSnapshot().archivedSessionIds).toEqual([])
   })
 
   it('keeps the newest row and places Workspaces missing from partial orders last', async () => {

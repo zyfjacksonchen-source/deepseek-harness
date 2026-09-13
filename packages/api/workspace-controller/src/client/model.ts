@@ -7,6 +7,7 @@ import type { RemoteFailure, RemoteResult, TypertClientRemote } from '@deepseek-
 import type {
   WorkspaceArchiveSessionRequest,
   WorkspaceArchiveValue,
+  WorkspaceUnarchiveSessionRequest,
   WorkspaceBaseline,
   WorkspaceCreateRequest,
   WorkspaceCreateValue,
@@ -61,6 +62,9 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
   private orderRequestGeneration = 0
   /** Increments on stream orders so a later remote commit outranks an older unary echo. */
   private orderFrameGeneration = 0
+  /** Prevent a delayed archive/restore echo from undoing a newer Host frame. */
+  private archiveRequestGeneration = 0
+  private archiveFrameGeneration = 0
   /** Last complete order accepted from a baseline, increment, or current unary echo. */
   private committedOrder: WorkspaceId[] = []
   /** Host Workspace ids are never reused, so delayed data cannot resurrect a removed row. */
@@ -165,8 +169,23 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
   async archiveSession(
     sessionId: WorkspaceArchiveSessionRequest['sessionId'],
   ): Promise<RemoteResult<WorkspaceArchiveValue>> {
+    const requestGeneration = ++this.archiveRequestGeneration
+    const frameGeneration = this.archiveFrameGeneration
     const result = await this.remote.archiveSession({ sessionId })
-    if (result.ok) this.installArchived(result.value.archivedSessionIds)
+    if (result.ok && requestGeneration === this.archiveRequestGeneration
+      && frameGeneration === this.archiveFrameGeneration) this.installArchived(result.value.archivedSessionIds)
+    return result
+  }
+
+  /** Restore one Session and install the Host-confirmed complete archive set. */
+  async unarchiveSession(
+    sessionId: WorkspaceUnarchiveSessionRequest['sessionId'],
+  ): Promise<RemoteResult<WorkspaceArchiveValue>> {
+    const requestGeneration = ++this.archiveRequestGeneration
+    const frameGeneration = this.archiveFrameGeneration
+    const result = await this.remote.unarchiveSession({ sessionId })
+    if (result.ok && requestGeneration === this.archiveRequestGeneration
+      && frameGeneration === this.archiveFrameGeneration) this.installArchived(result.value.archivedSessionIds)
     return result
   }
 
@@ -176,6 +195,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
    */
   replaceBaseline(baseline: WorkspaceBaseline): void {
     this.orderFrameGeneration++
+    this.archiveFrameGeneration++
     this.installViews(baseline.items)
     this.installArchived(baseline.archivedSessionIds)
     this.state = 'idle'
@@ -205,6 +225,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
    * @param archivedSessionIds - complete Host-confirmed archive set.
    */
   replaceArchived(archivedSessionIds: WorkspaceArchiveValue['archivedSessionIds']): void {
+    this.archiveFrameGeneration++
     this.installArchived(archivedSessionIds)
   }
 
