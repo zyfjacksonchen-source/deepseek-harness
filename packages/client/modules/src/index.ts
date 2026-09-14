@@ -67,6 +67,19 @@ export interface ClientArtifactBaseline {
   readonly size: number
 }
 
+/** Immutable input handed to one owner decorating a client bundle in memory. */
+export interface ClientBundleDecoratorInput {
+  /** Package id whose client artifact is being composed. */
+  readonly id: string
+  /** Absolute path of the raw artifact (identity only; decorators must not write it). */
+  readonly clientPath: string
+  /** Defensive copy of the raw artifact bytes captured by this registry. */
+  readonly bundle: Buffer
+}
+
+/** Produce the effective bytes the native registry will hash, map and serve. */
+export type ClientBundleDecorator = (input: ClientBundleDecoratorInput) => Buffer
+
 /** Resolved metadata cached for one Loader specifier and owning-tree base URL until restart. */
 interface PkgMeta extends WebBootRowFields {
   clientPath: string
@@ -142,6 +155,12 @@ interface WebPluginRecord {
   baseline: ClientArtifactBaseline
   /** Optional authored source map snapshot; generated-file identity mapping is the fallback. */
   sourceMap?: { body: Buffer; parsed: Record<string, unknown> }
+}
+
+interface ClientBundleDecoration {
+  decorate: ClientBundleDecorator
+  /** Effective snapshot for the currently admitted source row; absent while the target is absent. */
+  bundle?: Buffer
 }
 
 /** Fields shared by every generated combo response. */
@@ -525,6 +544,8 @@ export class ClientModuleRegistry extends Service {
   private readonly pkgMeta = new Map<string, ResolvedPkgMeta | null>()
   private readonly rebuildListeners = new Set<(id: string, rev: string) => void>()
   private readonly graphListeners = new Set<() => void>()
+  /** One in-memory owner per target; effective bytes never replace the raw HMR snapshot. */
+  private readonly decorations = new Map<string, ClientBundleDecoration>()
   private readonly dirty = new Set<string>()
   private readonly initialRevisionNonce = randomBytes(8).toString('hex')
   private nextInitialRevision = 0
@@ -627,6 +648,30 @@ export class ClientModuleRegistry extends Service {
   }
 
   /**
+   * Decorate one registered client artifact inside the native composition boundary.
+   * The resulting bytes own their native URL/hash and generated identity source map.
+   * @param id - exact package id already present in the graph.
+   * @param decorate - synchronous transform over a defensive copy of the raw bytes.
+   * @returns idempotent disposer restoring the raw artifact through the same boundary.
+   */
+  decorateBundle(id: string, decorate: ClientBundleDecorator): () => void {
+    const record = this.table.get(id)
+    if (record === undefined) throw new Error(`client-modules: cannot decorate unknown client bundle "${id}"`)
+    if (this.decorations.has(id)) throw new Error(`client-modules: client bundle "${id}" already has a decorator`)
+    const decoration = { decorate, bundle: this.runDecorator(id, record, decorate) }
+    this.decorations.set(id, decoration)
+    this.publishEffectiveChange(id)
+    let active = true
+    return () => {
+      if (!active) return
+      active = false
+      if (this.decorations.get(id) !== decoration) return
+      this.decorations.delete(id)
+      if (this.table.has(id)) this.publishEffectiveChange(id)
+    }
+  }
+
+  /**
    * Re-hash one bundle (the HMR watch's registration hook — the only entry
    * point through which bundle content changes reach the graph).
    * @param id - entry id (package name).
@@ -639,24 +684,21 @@ export class ClientModuleRegistry extends Service {
     const bundle = readFileSync(record.meta.clientPath)
     const sourceMap = this.readSourceMapSnapshot(record.meta.clientPath)
     const rev = artifactRevision(bundle, sourceMap)
+    if (rev === record.entry.rev) {
+      record.baseline = baseline
+      return this.composed.entries.find(entry => entry.id === id)?.rev ?? rev
+    }
+    const decoration = this.decorations.get(id)
+    const effective = decoration === undefined
+      ? undefined
+      : this.runDecorator(id, { ...record, bundle }, decoration.decorate)
     record.baseline = baseline
-    if (rev === record.entry.rev) return rev
     record.entry = graphRow(id, rev, record.meta)
     record.bundle = bundle
     if (sourceMap === undefined) delete record.sourceMap
     else record.sourceMap = sourceMap
-    this.composed = this.compose()
-    for (const notify of this.rebuildListeners) {
-      // Containment: rebuilt() runs inside the HMR watch callback — a
-      // throwing subscriber must not kill the poll or skip later subscribers.
-      try {
-        notify(id, rev)
-      } catch (error) {
-        this.ctx.logger.error(error)
-      }
-    }
-    this.notifyGraphChanged()
-    return rev
+    if (decoration !== undefined && effective !== undefined) decoration.bundle = effective
+    return this.publishEffectiveChange(id)
   }
 
   /**
@@ -681,14 +723,15 @@ export class ClientModuleRegistry extends Service {
   }
 
   private compose(): WebBootGraph {
-    const entries = orderByModuleGraph([...this.table.values()].map(record => record.entry))
+    const effective = new Map([...this.table].map(([id, record]) => [id, this.effectiveRecord(id, record)]))
+    const entries = orderByModuleGraph([...effective.values()].map(record => record.entry))
     const bootstrap = PARSER_PRELOAD_IDS
-      .map(id => this.table.get(id))
+      .map(id => effective.get(id))
       .filter((record): record is WebPluginRecord => record !== undefined)
     const bootstrapIds = new Set(bootstrap.map(record => record.entry.id))
     const application = entries
       .filter(entry => !bootstrapIds.has(entry.id))
-      .map(entry => this.table.get(entry.id))
+      .map(entry => effective.get(entry.id))
       .filter((record): record is WebPluginRecord => record !== undefined)
     const artifacts: BatchArtifact[] = []
     for (const records of partitionComboRecords(bootstrap)) {
@@ -710,7 +753,7 @@ export class ClientModuleRegistry extends Service {
       })
     }
     const responses = new Map(batchResponses)
-    for (const record of this.table.values()) {
+    for (const record of effective.values()) {
       const artifact = buildCombo([record], record.entry.rev)
       responses.set(artifact.url, {
         body: artifact.script,
@@ -726,6 +769,49 @@ export class ClientModuleRegistry extends Service {
     this.responses = responses
     const batches = artifacts.map(artifact => artifact.descriptor)
     return { rev: shortHash(JSON.stringify({ entries, batches })), entries, batches }
+  }
+
+  /** Run a decorator once without exposing the registry-owned raw buffer to mutation. */
+  private runDecorator(id: string, record: WebPluginRecord, decorate: ClientBundleDecorator): Buffer {
+    const output = decorate({ id, clientPath: record.meta.clientPath, bundle: Buffer.from(record.bundle) })
+    if (!Buffer.isBuffer(output)) {
+      throw new Error(`client-modules: decorator for "${id}" must return a Buffer`)
+    }
+    return Buffer.from(output)
+  }
+
+  /** Project one raw table record into the exact bytes used by every native response. */
+  private effectiveRecord(id: string, record: WebPluginRecord): WebPluginRecord {
+    const decoration = this.decorations.get(id)
+    if (decoration === undefined) return record
+    const bundle = decoration.bundle
+    if (bundle === undefined) {
+      throw new Error(`client-modules: decorated client bundle "${id}" has no admitted effective snapshot`)
+    }
+    const effective: WebPluginRecord = {
+      ...record,
+      entry: graphRow(id, artifactRevision(bundle, undefined), record.meta),
+      bundle,
+    }
+    // A source map authored for the raw bytes cannot describe injected code.
+    delete effective.sourceMap
+    return effective
+  }
+
+  /** Publish one atomic effective-byte generation through the existing HMR faces. */
+  private publishEffectiveChange(id: string): string {
+    this.composed = this.compose()
+    const rev = this.composed.entries.find(entry => entry.id === id)?.rev
+    if (rev === undefined) throw new Error(`client-modules: decorated client bundle "${id}" left the graph`)
+    for (const notify of this.rebuildListeners) {
+      try {
+        notify(id, rev)
+      } catch (error) {
+        this.ctx.logger.error(error)
+      }
+    }
+    this.notifyGraphChanged()
+    return rev
   }
 
   private notifyGraphChanged(): void {
@@ -958,13 +1044,17 @@ export class ClientModuleRegistry extends Service {
       )
     }
     const source = sources[0]
-    if (source === undefined) return this.table.delete(packageName)
+    if (source === undefined) {
+      const decoration = this.decorations.get(packageName)
+      if (decoration !== undefined) delete decoration.bundle
+      return this.table.delete(packageName)
+    }
     if (this.table.get(packageName)?.sourceKey === source.sourceKey) return false
     // The opaque initial rev rides the row until HMR observes a file change;
     // a fiber restart from the same source reuses the existing row.
     const snapshot = this.initialBundleSnapshot(packageName, source.meta.clientPath)
     const rev = this.allocateInitialRevision()
-    this.table.set(packageName, {
+    const record: WebPluginRecord = {
       entry: graphRow(packageName, rev, source.meta),
       loaderName: source.loaderName,
       sourceKey: source.sourceKey,
@@ -972,7 +1062,15 @@ export class ClientModuleRegistry extends Service {
       bundle: snapshot.bundle,
       baseline: snapshot.baseline,
       ...(snapshot.sourceMap === undefined ? {} : { sourceMap: snapshot.sourceMap }),
-    })
+    }
+    const decoration = this.decorations.get(packageName)
+    const effective = decoration === undefined
+      ? undefined
+      : this.runDecorator(packageName, record, decoration.decorate)
+    // Admit the new raw/effective pair together. A rejecting decorator leaves the previous
+    // row and effective snapshot intact (or keeps an absent target absent).
+    if (decoration !== undefined && effective !== undefined) decoration.bundle = effective
+    this.table.set(packageName, record)
     return true
   }
 

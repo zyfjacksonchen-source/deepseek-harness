@@ -1,6 +1,6 @@
 /** Node-half composition diagnostics for package metadata and built client bundles. */
 
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { SourceMap } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -538,6 +538,220 @@ describe('client bundle activation', () => {
     expect((await routeRequest(route, third)).status).toBe(200)
   })
 
+  it('gives decorated bytes their own native URL, response and identity source map', async () => {
+    const packageName = '@fixture/decorated-client'
+    const clientPath = writePackage(packageName)
+    mkdirSync(dirname(clientPath), { recursive: true })
+    writeFileSync(clientPath, 'window.raw = true\n')
+    writeFileSync(`${clientPath}.map`, JSON.stringify({
+      version: 3,
+      names: [],
+      mappings: 'AAAA',
+      sources: ['src/raw.ts'],
+    }))
+    const { service, route } = constructWithRoute([packageName])
+    const rawGraph = service.graph()
+    const rawBatchUrl = rawGraph.batches[0]!.url
+    const rawRowUrl = rawGraph.entries[0]!.url
+    let captured: Buffer | undefined
+
+    service.decorateBundle(packageName, (input) => {
+      expect(input.id).toBe(packageName)
+      expect(input.clientPath).toBe(clientPath)
+      captured = input.bundle
+      input.bundle.fill(0)
+      return Buffer.from('window.raw = true\nwindow.decorated = true\n')
+    })
+
+    const decorated = service.graph()
+    const batch = decorated.batches[0]!
+    const row = decorated.entries[0]!
+    expect(batch.url).not.toBe(rawBatchUrl)
+    expect(row.url).not.toBe(rawRowUrl)
+    expect(captured).toBeDefined()
+    expect((await routeRequest(route, batch.url)).body.toString('utf8')).toContain('window.decorated = true')
+    expect((await routeRequest(route, row.url)).body.toString('utf8')).toContain('window.decorated = true')
+    expect((await routeRequest(route, rawBatchUrl)).body.toString('utf8')).toContain('window.raw = true')
+    expect((await routeRequest(route, batch.url)).headers?.['cache-control'])
+      .toBe('public, max-age=31536000, immutable')
+
+    const map = JSON.parse((await routeRequest(route, mapUrl(batch.url))).body.toString('utf8')) as {
+      sections: { map: { sources: string[]; sourcesContent: string[] } }[]
+    }
+    expect(map.sections[0]!.map.sources).toEqual([`/plugins/${packageName}/client.js`])
+    expect(map.sections[0]!.map.sourcesContent[0]).toContain('window.decorated = true')
+    expect(map.sections[0]!.map.sources).not.toContain('src/raw.ts')
+    expect(readFileSync(clientPath, 'utf8')).toBe('window.raw = true\n')
+  })
+
+  it('caches a decoration across unrelated graph changes and disposes through native HMR faces', async () => {
+    const packageName = '@fixture/decorator-lifecycle'
+    const otherName = '@fixture/decorator-unrelated'
+    const clientPath = writePackage(packageName)
+    mkdirSync(dirname(clientPath), { recursive: true })
+    writeFileSync(clientPath, 'window.generation = 1\n')
+    const entries = [packageName]
+    const { context, service, route } = constructWithRoute(entries)
+    const rebuilt: { id: string; rev: string }[] = []
+    let graphChanges = 0
+    service.onRebuilt((id, rev) => { rebuilt.push({ id, rev }) })
+    service.onGraphChanged(() => { graphChanges++ })
+    let calls = 0
+    const dispose = service.decorateBundle(packageName, ({ bundle }) => {
+      calls++
+      const source = bundle.toString('utf8')
+      if (source.includes('refuse')) throw new Error('fixture decorator refusal')
+      return Buffer.from(`${source}window.decorated = true\n`)
+    })
+    const decoratedUrl = service.graph().entries[0]!.url
+    expect(calls).toBe(1)
+    expect(rebuilt).toEqual([{ id: packageName, rev: service.graph().entries[0]!.rev }])
+    expect(graphChanges).toBe(1)
+
+    writeBuiltPackage(otherName, {})
+    entries.push(otherName)
+    emitLoaderEntryChange(context, otherName)
+    await Promise.resolve()
+    expect(calls).toBe(1)
+    expect((await routeRequest(route, service.graph().batches[0]!.url)).body.toString('utf8'))
+      .toContain('window.decorated = true')
+
+    rebuilt.length = 0
+    graphChanges = 0
+    writeFileSync(clientPath, 'window.generation = 2\n')
+    const rebuiltRev = service.rebuilt(packageName)
+    expect(calls).toBe(2)
+    expect(rebuiltRev).toBe(service.graph().entries.find(entry => entry.id === packageName)!.rev)
+    expect(rebuilt).toEqual([{ id: packageName, rev: rebuiltRev! }])
+    expect(graphChanges).toBe(1)
+
+    const beforeRefusal = service.graph()
+    const beforeBaseline = service.artifactBaseline(packageName)
+    rebuilt.length = 0
+    graphChanges = 0
+    writeFileSync(clientPath, 'window.refuse = true\n')
+    expect(() => service.rebuilt(packageName)).toThrow('fixture decorator refusal')
+    expect(service.graph()).toBe(beforeRefusal)
+    expect(service.artifactBaseline(packageName)).toEqual(beforeBaseline)
+    expect(rebuilt).toEqual([])
+    expect(graphChanges).toBe(0)
+
+    dispose()
+    expect(service.graph().entries.find(entry => entry.id === packageName)!.url).not.toBe(decoratedUrl)
+    expect(rebuilt.at(-1)).toEqual({
+      id: packageName,
+      rev: service.graph().entries.find(entry => entry.id === packageName)!.rev,
+    })
+    const afterFirstDispose = { rebuilt: rebuilt.length, graphChanges }
+    dispose()
+    expect({ rebuilt: rebuilt.length, graphChanges }).toEqual(afterFirstDispose)
+  })
+
+  it('redecorates replacement and reloaded sources while disposed owners stay gone', async () => {
+    const packageName = '@fixture/decorator-source-lifecycle'
+    const clientPath = writePackage(packageName)
+    const hostPath = join(dirname(clientPath), 'index.js')
+    mkdirSync(dirname(clientPath), { recursive: true })
+    writeFileSync(hostPath, 'export default {}\n')
+    writeFileSync(clientPath, 'window.raw = true\n')
+    const entries = [packageName]
+    const alias = './decorator-source-lifecycle.js'
+    const internal = {
+      version: 'v2' as const,
+      resolveSync: () => ({ format: 'module' as const, url: pathToFileURL(hostPath).href }),
+    }
+    const { context, service, route } = constructWithRoute(entries, {
+      internal: internal as unknown as NonNullable<Context['loader']['internal']>,
+    })
+    let oldCalls = 0
+    const oldDispose = service.decorateBundle(packageName, ({ bundle }) => {
+      oldCalls++
+      if (bundle.includes('refuse')) throw new Error('fixture replacement refusal')
+      return Buffer.concat([bundle, Buffer.from('window.oldDecoration = true\n')])
+    })
+    expect(oldCalls).toBe(1)
+
+    entries.push(alias)
+    emitLoaderEntryChange(context, alias)
+    await Promise.resolve()
+    const beforeReplacement = service.graph()
+    const beforeReplacementBody = (await routeRequest(route, beforeReplacement.batches[0]!.url)).body
+    writeFileSync(clientPath, 'window.refuse = true\n')
+    entries.splice(entries.indexOf(packageName), 1)
+    emitLoaderEntryChange(context, packageName)
+    await Promise.resolve()
+    expect(oldCalls).toBe(2)
+    expect(service.graph()).toBe(beforeReplacement)
+    expect((await routeRequest(route, beforeReplacement.batches[0]!.url)).body).toEqual(beforeReplacementBody)
+
+    writeFileSync(clientPath, 'window.raw = true\n')
+    emitLoaderEntryChange(context, alias)
+    await Promise.resolve()
+    const replaced = service.graph()
+    expect(oldCalls).toBe(3)
+    expect((await routeRequest(route, replaced.batches[0]!.url)).body.toString('utf8'))
+      .toContain('window.oldDecoration')
+
+    entries.splice(0)
+    emitLoaderEntryChange(context, alias)
+    await Promise.resolve()
+    expect(service.graph().entries).toEqual([])
+
+    entries.push(packageName)
+    emitLoaderEntryChange(context, packageName)
+    await Promise.resolve()
+    const reloaded = service.graph()
+    expect(oldCalls).toBe(4)
+    expect((await routeRequest(route, reloaded.batches[0]!.url)).body.toString('utf8'))
+      .toContain('window.oldDecoration')
+
+    entries.splice(0)
+    emitLoaderEntryChange(context, packageName)
+    await Promise.resolve()
+    expect(() => { oldDispose() }).not.toThrow()
+    entries.push(packageName)
+    emitLoaderEntryChange(context, packageName)
+    await Promise.resolve()
+    expect((await routeRequest(route, service.graph().batches[0]!.url)).body.toString('utf8'))
+      .not.toContain('window.oldDecoration')
+
+    const newDispose = service.decorateBundle(packageName, ({ bundle }) => (
+      Buffer.concat([bundle, Buffer.from('window.newDecoration = true\n')])
+    ))
+    const newUrl = service.graph().batches[0]!.url
+    expect(() => { oldDispose() }).not.toThrow()
+    expect(service.graph().batches[0]!.url).toBe(newUrl)
+    expect((await routeRequest(route, newUrl)).body.toString('utf8')).toContain('window.newDecoration')
+    newDispose()
+  })
+
+  it('refuses invalid decorators atomically without changing graph, responses or notifications', async () => {
+    const packageName = '@fixture/decorator-refusal'
+    writeBuiltPackage(packageName, {})
+    const { service, route } = constructWithRoute([packageName])
+    const before = service.graph()
+    const beforeUrl = before.batches[0]!.url
+    const beforeBody = (await routeRequest(route, beforeUrl)).body
+    const rebuilt = vi.fn()
+    const changed = vi.fn()
+    service.onRebuilt(rebuilt)
+    service.onGraphChanged(changed)
+
+    expect(() => service.decorateBundle('@fixture/missing', ({ bundle }) => bundle))
+      .toThrow('cannot decorate unknown client bundle')
+    expect(() => service.decorateBundle(packageName, () => { throw new Error('refused') })).toThrow('refused')
+    expect(() => service.decorateBundle(packageName, () => 'wrong' as unknown as Buffer))
+      .toThrow('must return a Buffer')
+    expect(service.graph()).toBe(before)
+    expect((await routeRequest(route, beforeUrl)).body).toEqual(beforeBody)
+    expect(rebuilt).not.toHaveBeenCalled()
+    expect(changed).not.toHaveBeenCalled()
+
+    const dispose = service.decorateBundle(packageName, ({ bundle }) => Buffer.concat([bundle, Buffer.from('// ok\n')]))
+    expect(() => service.decorateBundle(packageName, ({ bundle }) => bundle)).toThrow('already has a decorator')
+    dispose()
+  })
+
   it('assigns opaque startup revisions instead of deriving them from artifact content', () => {
     const firstName = '@fixture/startup-revision-first'
     const secondName = '@fixture/startup-revision-second'
@@ -557,6 +771,12 @@ describe('client bundle activation', () => {
       mtimeMs: firstStat.mtimeMs,
       size: firstStat.size,
     })
+    const contentRevision = service.rebuilt(firstName)!
+    const admittedBaseline = service.artifactBaseline(firstName)!
+    const touchedAt = new Date(admittedBaseline.mtimeMs + 2_000)
+    utimesSync(firstPath, touchedAt, touchedAt)
+    expect(service.rebuilt(firstName)).toBe(contentRevision)
+    expect(service.artifactBaseline(firstName)!.mtimeMs).toBeGreaterThan(admittedBaseline.mtimeMs)
     expect(service.artifactBaseline('@fixture/unknown')).toBeUndefined()
   })
 
